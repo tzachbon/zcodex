@@ -1602,6 +1602,9 @@ impl App {
                 self.chat_widget.set_model(&model);
                 self.refresh_status_line();
             }
+            AppEvent::ResumePendingPostTurnProgression => {
+                self.chat_widget.resume_pending_post_turn_progression();
+            }
             AppEvent::UpdateCollaborationMode(mask) => {
                 self.chat_widget.set_collaboration_mask(mask);
                 self.refresh_status_line();
@@ -2199,6 +2202,15 @@ impl App {
                 self.chat_widget
                     .submit_user_message_with_mode(text, collaboration_mode);
             }
+            AppEvent::StartLoop {
+                prompt,
+                text_elements,
+                local_images,
+                stop_phrase,
+            } => {
+                self.chat_widget
+                    .start_loop(prompt, text_elements, local_images, stop_phrase);
+            }
             AppEvent::ManageSkillsClosed => {
                 self.chat_widget.handle_manage_skills_closed();
             }
@@ -2334,6 +2346,7 @@ impl App {
                 history_log_id: 0,
                 history_entry_count: 0,
                 initial_messages: None,
+                active_loop_state: None,
                 rollout_path: thread.rollout_path(),
             }),
         };
@@ -3009,6 +3022,7 @@ mod tests {
                 history_log_id: 0,
                 history_entry_count: 0,
                 initial_messages: None,
+                active_loop_state: None,
                 rollout_path: Some(PathBuf::new()),
             };
             Arc::new(new_session_info(
@@ -3063,6 +3077,7 @@ mod tests {
                 history_log_id: 0,
                 history_entry_count: 0,
                 initial_messages: None,
+                active_loop_state: None,
                 rollout_path: Some(PathBuf::new()),
             }),
         });
@@ -3109,6 +3124,7 @@ mod tests {
             history_log_id: 0,
             history_entry_count: 0,
             initial_messages: None,
+            active_loop_state: None,
             rollout_path: Some(PathBuf::new()),
         };
 

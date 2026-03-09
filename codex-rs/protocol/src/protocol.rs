@@ -81,6 +81,51 @@ pub struct McpServerRefreshConfig {
     pub mcp_oauth_credentials_store_mode: Value,
 }
 
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq, JsonSchema, TS)]
+pub struct LoopConfig {
+    pub stop_phrase: String,
+    pub max_iterations: u32,
+    #[ts(type = "number")]
+    pub max_duration_secs: u64,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq, JsonSchema, TS)]
+pub struct LoopState {
+    pub config: LoopConfig,
+    #[ts(type = "number")]
+    pub started_at: i64,
+    pub iteration: u32,
+    pub initial_prompt: String,
+}
+
+#[derive(Debug, Clone, Copy, Deserialize, Serialize, PartialEq, Eq, JsonSchema, TS)]
+#[serde(rename_all = "snake_case")]
+#[ts(rename_all = "snake_case")]
+pub enum LoopPersistenceStatus {
+    Active,
+    Paused,
+    Stopped,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq, JsonSchema, TS)]
+pub struct LoopEventItem {
+    pub state: LoopState,
+    pub status: LoopPersistenceStatus,
+    pub stop_reason: Option<LoopStopReason>,
+}
+
+#[derive(Debug, Clone, Copy, Deserialize, Serialize, PartialEq, Eq, JsonSchema, TS)]
+#[serde(rename_all = "snake_case")]
+#[ts(rename_all = "snake_case")]
+pub enum LoopStopReason {
+    StopPhraseMatched,
+    MaxIterationsReached,
+    MaxDurationReached,
+    FailedTurn,
+    Cancelled,
+    Interrupted,
+}
+
 /// Submission operation
 #[derive(Debug, Clone, Deserialize, Serialize, PartialEq, JsonSchema)]
 #[serde(tag = "type", rename_all = "snake_case")]
@@ -277,6 +322,9 @@ pub enum Op {
         hazelnut_id: String,
         is_preload: bool,
     },
+
+    /// Persist loop lifecycle state into the rollout for resume.
+    PersistLoopEvent { event: LoopEventItem },
 
     /// Request the agent to summarize the current conversation context.
     /// The agent will use its existing context (either conversation history or previous response id)
@@ -1471,6 +1519,7 @@ pub struct ResumedHistory {
     pub conversation_id: ThreadId,
     pub history: Vec<RolloutItem>,
     pub rollout_path: PathBuf,
+    pub active_loop_state: Option<LoopState>,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize, JsonSchema, TS)]
@@ -1692,6 +1741,7 @@ pub enum RolloutItem {
     ResponseItem(ResponseItem),
     Compacted(CompactedItem),
     TurnContext(TurnContextItem),
+    LoopEvent(LoopEventItem),
     EventMsg(EventMsg),
 }
 
@@ -2287,6 +2337,11 @@ pub struct SessionConfiguredEvent {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub initial_messages: Option<Vec<EventMsg>>,
 
+    /// Restored loop state for resumed sessions with an active loop.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub active_loop_state: Option<LoopState>,
+
     /// Path in which the rollout is stored. Can be `None` for ephemeral threads
     #[serde(skip_serializing_if = "Option::is_none")]
     pub rollout_path: Option<PathBuf>,
@@ -2629,6 +2684,58 @@ mod tests {
                 "text_elements": [],
             })
         );
+
+        Ok(())
+    }
+
+    #[test]
+    fn loop_config_serializes() -> Result<()> {
+        let config = LoopConfig {
+            stop_phrase: "done".to_string(),
+            max_iterations: 42,
+            max_duration_secs: 600,
+        };
+
+        assert_eq!(
+            serde_json::to_value(&config)?,
+            json!({
+                "stop_phrase": "done",
+                "max_iterations": 42,
+                "max_duration_secs": 600,
+            })
+        );
+
+        Ok(())
+    }
+
+    #[test]
+    fn loop_state_round_trips() -> Result<()> {
+        let state = LoopState {
+            config: LoopConfig {
+                stop_phrase: "done".to_string(),
+                max_iterations: 5,
+                max_duration_secs: 60,
+            },
+            started_at: 1_741_536_000,
+            iteration: 3,
+            initial_prompt: "ship it".to_string(),
+        };
+
+        let parsed: LoopState = serde_json::from_value(serde_json::to_value(&state)?)?;
+        assert_eq!(parsed, state);
+
+        Ok(())
+    }
+
+    #[test]
+    fn loop_stop_reason_serializes_snake_case() -> Result<()> {
+        assert_eq!(
+            serde_json::to_value(LoopStopReason::StopPhraseMatched)?,
+            json!("stop_phrase_matched")
+        );
+
+        let parsed: LoopStopReason = serde_json::from_value(json!("failed_turn"))?;
+        assert_eq!(parsed, LoopStopReason::FailedTurn);
 
         Ok(())
     }

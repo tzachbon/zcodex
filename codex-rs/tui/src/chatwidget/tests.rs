@@ -28,6 +28,7 @@ use codex_core::protocol::AgentMessageEvent;
 use codex_core::protocol::AgentReasoningDeltaEvent;
 use codex_core::protocol::AgentReasoningEvent;
 use codex_core::protocol::ApplyPatchApprovalRequestEvent;
+use codex_core::protocol::AskForApproval;
 use codex_core::protocol::BackgroundEventEvent;
 use codex_core::protocol::CreditsSnapshot;
 use codex_core::protocol::Event;
@@ -48,6 +49,7 @@ use codex_core::protocol::PatchApplyEndEvent;
 use codex_core::protocol::RateLimitWindow;
 use codex_core::protocol::ReviewRequest;
 use codex_core::protocol::ReviewTarget;
+use codex_core::protocol::SandboxPolicy;
 use codex_core::protocol::SessionSource;
 use codex_core::protocol::StreamErrorEvent;
 use codex_core::protocol::TerminalInteractionEvent;
@@ -68,6 +70,7 @@ use codex_protocol::config_types::ModeKind;
 use codex_protocol::config_types::Personality;
 use codex_protocol::config_types::Settings;
 use codex_protocol::openai_models::ModelPreset;
+use codex_protocol::openai_models::ReasoningEffort as ReasoningEffortConfig;
 use codex_protocol::openai_models::ReasoningEffortPreset;
 use codex_protocol::openai_models::default_input_modalities;
 use codex_protocol::parse_command::ParsedCommand;
@@ -156,6 +159,7 @@ async fn resumed_initial_messages_render_history() {
                 message: "assistant reply".to_string(),
             }),
         ]),
+        active_loop_state: None,
         rollout_path: Some(rollout_file.path().to_path_buf()),
     };
 
@@ -218,6 +222,7 @@ async fn replayed_user_message_preserves_text_elements_and_local_images() {
             text_elements: text_elements.clone(),
             local_images: local_images.clone(),
         })]),
+        active_loop_state: None,
         rollout_path: Some(rollout_file.path().to_path_buf()),
     };
 
@@ -325,6 +330,7 @@ async fn submission_preserves_text_elements_and_local_images() {
         history_log_id: 0,
         history_entry_count: 0,
         initial_messages: None,
+        active_loop_state: None,
         rollout_path: Some(rollout_file.path().to_path_buf()),
     };
     chat.handle_codex_event(Event {
@@ -459,6 +465,7 @@ async fn interrupted_turn_restores_queued_messages_with_images_and_elements() {
         }],
         text_elements: first_elements,
         mention_paths: HashMap::new(),
+        loop_pre_starter: false,
     });
     chat.queued_user_messages.push_back(UserMessage {
         text: second_text,
@@ -468,6 +475,7 @@ async fn interrupted_turn_restores_queued_messages_with_images_and_elements() {
         }],
         text_elements: second_elements,
         mention_paths: HashMap::new(),
+        loop_pre_starter: false,
     });
     chat.refresh_queued_user_messages();
 
@@ -548,6 +556,7 @@ async fn remap_placeholders_uses_attachment_labels() {
         text_elements: elements,
         local_images: attachments,
         mention_paths: HashMap::new(),
+        loop_pre_starter: false,
     };
     let mut next_label = 3usize;
     let remapped = remap_placeholders_for_message(message, &mut next_label);
@@ -609,6 +618,7 @@ async fn remap_placeholders_uses_byte_ranges_when_placeholder_missing() {
         text_elements: elements,
         local_images: attachments,
         mention_paths: HashMap::new(),
+        loop_pre_starter: false,
     };
     let mut next_label = 3usize;
     let remapped = remap_placeholders_for_message(message, &mut next_label);
@@ -918,6 +928,7 @@ async fn make_chatwidget_manual(
         last_unified_wait: None,
         unified_exec_wait_streak: None,
         task_complete_pending: false,
+        pending_post_turn_resume: None,
         unified_exec_processes: Vec::new(),
         agent_turn_running: false,
         mcp_startup_status: None,
@@ -933,6 +944,7 @@ async fn make_chatwidget_manual(
         frame_requester: FrameRequester::test_dummy(),
         show_welcome_banner: true,
         queued_user_messages: VecDeque::new(),
+        active_loop: None,
         suppress_session_configured_redraw: false,
         pending_notification: None,
         quit_shortcut_expires_at: None,
@@ -973,6 +985,29 @@ fn next_submit_op(op_rx: &mut tokio::sync::mpsc::UnboundedReceiver<Op>) -> Op {
             Err(TryRecvError::Disconnected) => panic!("expected submit op but channel closed"),
         }
     }
+}
+
+fn configure_session(chat: &mut ChatWidget) {
+    let configured = codex_core::protocol::SessionConfiguredEvent {
+        session_id: ThreadId::new(),
+        forked_from_id: None,
+        thread_name: None,
+        model: chat.current_model().to_string(),
+        model_provider_id: chat.config.model_provider_id.clone(),
+        approval_policy: AskForApproval::Never,
+        sandbox_policy: SandboxPolicy::ReadOnly,
+        cwd: PathBuf::from("/home/user/project"),
+        reasoning_effort: Some(ReasoningEffortConfig::default()),
+        history_log_id: 0,
+        history_entry_count: 0,
+        initial_messages: None,
+        active_loop_state: None,
+        rollout_path: None,
+    };
+    chat.handle_codex_event(Event {
+        id: "configured".into(),
+        msg: EventMsg::SessionConfigured(configured),
+    });
 }
 
 fn set_chatgpt_auth(chat: &mut ChatWidget) {
@@ -2624,26 +2659,7 @@ async fn plan_slash_command_switches_to_plan_mode() {
 async fn plan_slash_command_with_args_submits_prompt_in_plan_mode() {
     let (mut chat, _rx, mut op_rx) = make_chatwidget_manual(None).await;
     chat.set_feature_enabled(Feature::CollaborationModes, true);
-
-    let configured = codex_core::protocol::SessionConfiguredEvent {
-        session_id: ThreadId::new(),
-        forked_from_id: None,
-        thread_name: None,
-        model: "test-model".to_string(),
-        model_provider_id: "test-provider".to_string(),
-        approval_policy: AskForApproval::Never,
-        sandbox_policy: SandboxPolicy::ReadOnly,
-        cwd: PathBuf::from("/home/user/project"),
-        reasoning_effort: Some(ReasoningEffortConfig::default()),
-        history_log_id: 0,
-        history_entry_count: 0,
-        initial_messages: None,
-        rollout_path: None,
-    };
-    chat.handle_codex_event(Event {
-        id: "configured".into(),
-        msg: EventMsg::SessionConfigured(configured),
-    });
+    configure_session(&mut chat);
 
     chat.bottom_pane
         .set_composer_text("/plan build the plan".to_string(), Vec::new(), Vec::new());
@@ -2662,6 +2678,434 @@ async fn plan_slash_command_with_args_submits_prompt_in_plan_mode() {
         }
     );
     assert_eq!(chat.active_collaboration_mode_kind(), ModeKind::Plan);
+}
+
+#[tokio::test]
+async fn loop_slash_command_opens_stop_phrase_prompt() {
+    let (mut chat, mut rx, _op_rx) = make_chatwidget_manual(None).await;
+
+    chat.bottom_pane
+        .set_composer_text("/loop ship it".to_string(), Vec::new(), Vec::new());
+    chat.handle_key_event(KeyEvent::from(KeyCode::Enter));
+
+    assert!(
+        rx.try_recv().is_err(),
+        "loop prompt should not emit start event yet"
+    );
+    let popup = render_bottom_popup(&chat, 80);
+    assert!(
+        popup.contains("Loop Stop Phrase"),
+        "expected loop stop phrase prompt, got {popup:?}"
+    );
+}
+
+#[tokio::test]
+async fn loop_stop_phrase_prompt_emits_start_event() {
+    let (mut chat, mut rx, _op_rx) = make_chatwidget_manual(None).await;
+    let placeholder = "[Image #1]";
+    let image_path = PathBuf::from("/tmp/loop.png");
+
+    chat.bottom_pane
+        .set_composer_text("/loop ship it ".to_string(), Vec::new(), Vec::new());
+    chat.bottom_pane.attach_image(image_path.clone());
+    chat.handle_key_event(KeyEvent::from(KeyCode::Enter));
+    let popup = render_bottom_popup(&chat, 80);
+    assert!(
+        popup.contains("Loop Stop Phrase"),
+        "expected loop stop phrase prompt, got {popup:?}"
+    );
+    chat.handle_paste("ralph".to_string());
+    chat.handle_key_event(KeyEvent::from(KeyCode::Enter));
+
+    match rx.try_recv().expect("start loop event") {
+        AppEvent::StartLoop {
+            prompt,
+            text_elements,
+            local_images,
+            stop_phrase,
+        } => {
+            assert_eq!(prompt, format!("ship it {placeholder}"));
+            assert_eq!(
+                text_elements,
+                vec![TextElement::new(
+                    (8..8 + placeholder.len()).into(),
+                    Some(placeholder.to_string()),
+                )]
+            );
+            assert_eq!(
+                local_images,
+                vec![LocalImageAttachment {
+                    placeholder: placeholder.to_string(),
+                    path: image_path,
+                }]
+            );
+            assert_eq!(stop_phrase, "ralph");
+        }
+        other => panic!("expected StartLoop event, got {other:?}"),
+    }
+}
+
+#[tokio::test]
+async fn start_loop_submits_first_prompt_and_sets_indicator() {
+    let (mut chat, _rx, mut op_rx) = make_chatwidget_manual(None).await;
+    configure_session(&mut chat);
+    let placeholder = "[Image #1]";
+    let image = LocalImageAttachment {
+        placeholder: placeholder.to_string(),
+        path: PathBuf::from("/tmp/loop-start.png"),
+    };
+    let text = format!("ship it {placeholder}");
+    let text_elements = vec![TextElement::new(
+        (8..8 + placeholder.len()).into(),
+        Some(placeholder.to_string()),
+    )];
+
+    chat.start_loop(
+        text.clone(),
+        text_elements.clone(),
+        vec![image.clone()],
+        "ralph".to_string(),
+    );
+
+    let items = match next_submit_op(&mut op_rx) {
+        Op::UserTurn { items, .. } => items,
+        other => panic!("expected Op::UserTurn, got {other:?}"),
+    };
+    assert_eq!(
+        items,
+        vec![
+            UserInput::LocalImage { path: image.path },
+            UserInput::Text {
+                text,
+                text_elements
+            }
+        ]
+    );
+    assert_eq!(
+        chat.bottom_pane.mode_indicators(),
+        &[crate::bottom_pane::FooterBadge::Loop(
+            crate::bottom_pane::LoopIndicatorState {
+                iteration: 1,
+                max_iterations: 100,
+                status: crate::bottom_pane::LoopIndicatorStatus::Running,
+            }
+        )]
+    );
+}
+
+#[tokio::test]
+async fn pre_session_loop_shows_pending_indicator() {
+    let (mut chat, _rx, _op_rx) = make_chatwidget_manual(None).await;
+
+    chat.start_loop(
+        "ship it".to_string(),
+        Vec::new(),
+        Vec::new(),
+        "ralph".to_string(),
+    );
+
+    assert_eq!(
+        chat.bottom_pane.mode_indicators(),
+        &[crate::bottom_pane::FooterBadge::Loop(
+            crate::bottom_pane::LoopIndicatorState {
+                iteration: 0,
+                max_iterations: 100,
+                status: crate::bottom_pane::LoopIndicatorStatus::Pending,
+            }
+        )]
+    );
+}
+
+#[tokio::test]
+async fn first_queued_loop_submit_flips_pending_indicator_to_running() {
+    let (mut chat, _rx, mut op_rx) = make_chatwidget_manual(None).await;
+    chat.start_loop(
+        "ship it".to_string(),
+        Vec::new(),
+        Vec::new(),
+        "ralph".to_string(),
+    );
+    configure_session(&mut chat);
+
+    chat.maybe_send_next_queued_input();
+
+    let _ = next_submit_op(&mut op_rx);
+    assert_eq!(
+        chat.bottom_pane.mode_indicators(),
+        &[crate::bottom_pane::FooterBadge::Loop(
+            crate::bottom_pane::LoopIndicatorState {
+                iteration: 1,
+                max_iterations: 100,
+                status: crate::bottom_pane::LoopIndicatorStatus::Running,
+            }
+        )]
+    );
+}
+
+#[tokio::test]
+async fn pre_session_manual_submit_cancels_active_loop_before_queueing() {
+    let (mut chat, _rx, _op_rx) = make_chatwidget_manual(None).await;
+
+    chat.start_loop(
+        "ship it".to_string(),
+        Vec::new(),
+        Vec::new(),
+        "ralph".to_string(),
+    );
+    assert!(chat.active_loop.is_some());
+    assert_eq!(chat.queued_user_messages.len(), 1);
+
+    chat.submit_user_message(UserMessage::from("manual followup"));
+
+    assert!(chat.active_loop.is_none());
+    assert_eq!(chat.queued_user_messages.len(), 1);
+    assert_eq!(chat.queued_user_messages[0].text, "manual followup");
+    assert!(!chat.queued_user_messages[0].loop_pre_starter);
+}
+
+#[tokio::test]
+async fn loop_turn_complete_auto_submits_continuation() {
+    let (mut chat, _rx, mut op_rx) = make_chatwidget_manual(None).await;
+    configure_session(&mut chat);
+    chat.start_loop(
+        "ship it".to_string(),
+        Vec::new(),
+        Vec::new(),
+        "ralph".to_string(),
+    );
+    let _ = next_submit_op(&mut op_rx);
+    chat.handle_codex_event(Event {
+        id: "turn-complete".into(),
+        msg: EventMsg::TurnComplete(TurnCompleteEvent {
+            last_agent_message: Some("still working".to_string()),
+        }),
+    });
+
+    let items = match next_submit_op(&mut op_rx) {
+        Op::UserTurn { items, .. } => items,
+        other => panic!("expected Op::UserTurn, got {other:?}"),
+    };
+    assert_eq!(
+        items,
+        vec![UserInput::Text {
+            text: "Continue the same task.\nDo not ask the user for confirmation.\nIf all requested work is fully done and resolved, reply with exactly \"ralph\".\nOtherwise continue working.".to_string(),
+            text_elements: Vec::new(),
+        }]
+    );
+}
+
+#[tokio::test]
+async fn cancelled_loop_drops_queued_pre_session_starter() {
+    let (mut chat, _rx, _op_rx) = make_chatwidget_manual(None).await;
+
+    chat.start_loop(
+        "ship it".to_string(),
+        Vec::new(),
+        Vec::new(),
+        "ralph".to_string(),
+    );
+    assert_eq!(chat.queued_user_messages.len(), 1);
+
+    chat.cancel_loop_for_manual_action();
+
+    assert!(chat.queued_user_messages.is_empty());
+}
+
+#[tokio::test]
+async fn rate_limit_prompt_pending_suppresses_loop_followup_and_queued_submit() {
+    let auth = CodexAuth::create_dummy_chatgpt_auth_for_testing();
+    let (mut chat, _rx, mut op_rx) = make_chatwidget_manual(Some("gpt-5")).await;
+    chat.auth_manager = AuthManager::from_auth_for_testing(auth);
+    configure_session(&mut chat);
+    chat.start_loop(
+        "ship it".to_string(),
+        Vec::new(),
+        Vec::new(),
+        "ralph".to_string(),
+    );
+    let _ = next_submit_op(&mut op_rx);
+
+    chat.bottom_pane.set_task_running(true);
+    chat.queue_user_message("queued message".into());
+    chat.on_rate_limit_snapshot(Some(snapshot(90.0)));
+    assert!(matches!(
+        chat.rate_limit_switch_prompt,
+        RateLimitSwitchPromptState::Pending
+    ));
+
+    chat.on_task_complete(Some("still working".to_string()), false);
+
+    loop {
+        match op_rx.try_recv() {
+            Ok(Op::UserTurn { .. }) => panic!("unexpected submit while rate limit prompt pending"),
+            Ok(_) => continue,
+            Err(TryRecvError::Empty) => break,
+            Err(TryRecvError::Disconnected) => panic!("op channel closed"),
+        }
+    }
+    assert!(chat.active_loop.is_some());
+    let popup = render_bottom_popup(&chat, 80);
+    assert!(
+        popup.contains("Approaching rate limits"),
+        "expected rate limit prompt, got {popup:?}"
+    );
+}
+
+#[tokio::test]
+async fn rate_limit_prompt_resume_event_continues_deferred_loop_followup() {
+    let auth = CodexAuth::create_dummy_chatgpt_auth_for_testing();
+    let (mut chat, mut rx, mut op_rx) = make_chatwidget_manual(Some("gpt-5")).await;
+    chat.auth_manager = AuthManager::from_auth_for_testing(auth);
+    configure_session(&mut chat);
+    chat.start_loop(
+        "ship it".to_string(),
+        Vec::new(),
+        Vec::new(),
+        "ralph".to_string(),
+    );
+    let _ = next_submit_op(&mut op_rx);
+    chat.on_rate_limit_snapshot(Some(snapshot(90.0)));
+
+    chat.on_task_complete(Some("still working".to_string()), false);
+    let popup = render_bottom_popup(&chat, 80);
+    assert!(popup.contains("Approaching rate limits"));
+
+    chat.handle_key_event(KeyEvent::from(KeyCode::Esc));
+
+    let mut saw_resume = false;
+    loop {
+        match rx.try_recv() {
+            Ok(AppEvent::ResumePendingPostTurnProgression) => {
+                saw_resume = true;
+                break;
+            }
+            Ok(_) => continue,
+            Err(TryRecvError::Empty) => break,
+            Err(TryRecvError::Disconnected) => panic!("app event channel closed"),
+        }
+    }
+    assert!(saw_resume, "expected deferred post-turn resume event");
+
+    chat.resume_pending_post_turn_progression();
+
+    let items = match next_submit_op(&mut op_rx) {
+        Op::UserTurn { items, .. } => items,
+        other => panic!("expected Op::UserTurn, got {other:?}"),
+    };
+    assert_eq!(
+        items,
+        vec![UserInput::Text {
+            text: "Continue the same task.\nDo not ask the user for confirmation.\nIf all requested work is fully done and resolved, reply with exactly \"ralph\".\nOtherwise continue working.".to_string(),
+            text_elements: Vec::new(),
+        }]
+    );
+}
+
+#[tokio::test]
+async fn rate_limit_prompt_resume_event_continues_deferred_queued_message() {
+    let auth = CodexAuth::create_dummy_chatgpt_auth_for_testing();
+    let (mut chat, mut rx, mut op_rx) = make_chatwidget_manual(Some("gpt-5")).await;
+    chat.auth_manager = AuthManager::from_auth_for_testing(auth);
+    configure_session(&mut chat);
+    chat.queue_user_message("queued message".into());
+    chat.on_rate_limit_snapshot(Some(snapshot(90.0)));
+
+    chat.on_task_complete(Some("still working".to_string()), false);
+    let popup = render_bottom_popup(&chat, 80);
+    assert!(popup.contains("Approaching rate limits"));
+
+    chat.handle_key_event(KeyEvent::from(KeyCode::Esc));
+
+    let mut saw_resume = false;
+    loop {
+        match rx.try_recv() {
+            Ok(AppEvent::ResumePendingPostTurnProgression) => {
+                saw_resume = true;
+                break;
+            }
+            Ok(_) => continue,
+            Err(TryRecvError::Empty) => break,
+            Err(TryRecvError::Disconnected) => panic!("app event channel closed"),
+        }
+    }
+    assert!(saw_resume, "expected deferred post-turn resume event");
+
+    chat.resume_pending_post_turn_progression();
+
+    let items = match next_submit_op(&mut op_rx) {
+        Op::UserTurn { items, .. } => items,
+        other => panic!("expected Op::UserTurn, got {other:?}"),
+    };
+    assert_eq!(
+        items,
+        vec![UserInput::Text {
+            text: "queued message".to_string(),
+            text_elements: Vec::new(),
+        }]
+    );
+}
+
+#[tokio::test]
+async fn loop_turn_complete_continues_without_plan_prompt_when_loop_active() {
+    let (mut chat, _rx, mut op_rx) = make_chatwidget_manual(Some("gpt-5")).await;
+    configure_session(&mut chat);
+    chat.set_feature_enabled(Feature::CollaborationModes, true);
+    let plan_mask =
+        collaboration_modes::mask_for_kind(chat.models_manager.as_ref(), ModeKind::Plan)
+            .expect("expected plan collaboration mask");
+    chat.set_collaboration_mask(plan_mask);
+    chat.start_loop(
+        "ship it".to_string(),
+        Vec::new(),
+        Vec::new(),
+        "ralph".to_string(),
+    );
+    let _ = next_submit_op(&mut op_rx);
+
+    chat.on_task_started();
+    chat.on_plan_delta("- Step 1\n- Step 2\n".to_string());
+    chat.on_plan_item_completed("- Step 1\n- Step 2\n".to_string());
+    chat.on_task_complete(Some("still working".to_string()), false);
+
+    let items = match next_submit_op(&mut op_rx) {
+        Op::UserTurn { items, .. } => items,
+        other => panic!("expected Op::UserTurn, got {other:?}"),
+    };
+    assert_eq!(
+        items,
+        vec![UserInput::Text {
+            text: "Continue the same task.\nDo not ask the user for confirmation.\nIf all requested work is fully done and resolved, reply with exactly \"ralph\".\nOtherwise continue working.".to_string(),
+            text_elements: Vec::new(),
+        }]
+    );
+
+    let popup = render_bottom_popup(&chat, 80);
+    assert!(
+        !popup.contains(PLAN_IMPLEMENTATION_TITLE),
+        "expected no plan implementation prompt while loop active, got {popup:?}"
+    );
+}
+
+#[tokio::test]
+async fn loop_stop_phrase_clears_indicator_after_completion() {
+    let (mut chat, _rx, mut op_rx) = make_chatwidget_manual(None).await;
+    configure_session(&mut chat);
+    chat.start_loop(
+        "ship it".to_string(),
+        Vec::new(),
+        Vec::new(),
+        "ralph".to_string(),
+    );
+    let _ = next_submit_op(&mut op_rx);
+
+    chat.handle_codex_event(Event {
+        id: "turn-complete".into(),
+        msg: EventMsg::TurnComplete(TurnCompleteEvent {
+            last_agent_message: Some("ralph".to_string()),
+        }),
+    });
+
+    assert!(chat.bottom_pane.mode_indicators().is_empty());
 }
 
 #[tokio::test]

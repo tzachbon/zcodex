@@ -68,6 +68,7 @@ pub(crate) struct FooterProps {
     pub(crate) quit_shortcut_key: KeyBinding,
     pub(crate) context_window_percent: Option<i64>,
     pub(crate) context_window_used_tokens: Option<i64>,
+    pub(crate) mode_indicators: Vec<FooterBadge>,
     pub(crate) status_line_value: Option<Line<'static>>,
     pub(crate) status_line_enabled: bool,
 }
@@ -79,6 +80,26 @@ pub(crate) enum CollaborationModeIndicator {
     PairProgramming,
     #[allow(dead_code)] // Hidden by current mode filtering; kept for future UI re-enablement.
     Execute,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum LoopIndicatorStatus {
+    Pending,
+    Running,
+    Paused,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) struct LoopIndicatorState {
+    pub(crate) iteration: u32,
+    pub(crate) max_iterations: u32,
+    pub(crate) status: LoopIndicatorStatus,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum FooterBadge {
+    Collaboration(CollaborationModeIndicator),
+    Loop(LoopIndicatorState),
 }
 
 const MODE_CYCLE_HINT: &str = "shift+tab to cycle";
@@ -107,6 +128,38 @@ impl CollaborationModeIndicator {
             CollaborationModeIndicator::PairProgramming => Span::from(label).cyan(),
             CollaborationModeIndicator::Execute => Span::from(label).dim(),
         }
+    }
+}
+
+impl LoopIndicatorState {
+    fn label(self, compact: bool) -> String {
+        match self.status {
+            LoopIndicatorStatus::Pending => {
+                if compact {
+                    "Loop".to_string()
+                } else {
+                    "Loop pending".to_string()
+                }
+            }
+            LoopIndicatorStatus::Running => {
+                if compact {
+                    "Loop".to_string()
+                } else {
+                    format!("Loop {}/{}", self.iteration, self.max_iterations)
+                }
+            }
+            LoopIndicatorStatus::Paused => {
+                if compact {
+                    "Loop".to_string()
+                } else {
+                    format!("Loop paused {}/{}", self.iteration, self.max_iterations)
+                }
+            }
+        }
+    }
+
+    fn styled_span(self, compact: bool) -> Span<'static> {
+        Span::from(self.label(compact)).cyan()
     }
 }
 
@@ -185,7 +238,7 @@ pub(crate) fn footer_height(props: &FooterProps) -> u16 {
         | FooterMode::ShortcutOverlay
         | FooterMode::EscHint => false,
     };
-    footer_from_props_lines(props, None, false, show_shortcuts_hint, show_queue_hint).len() as u16
+    footer_from_props_lines(props, false, show_shortcuts_hint, show_queue_hint).len() as u16
 }
 
 /// Render a single precomputed footer line.
@@ -209,19 +262,12 @@ pub(crate) fn render_footer_from_props(
     area: Rect,
     buf: &mut Buffer,
     props: &FooterProps,
-    collaboration_mode_indicator: Option<CollaborationModeIndicator>,
     show_cycle_hint: bool,
     show_shortcuts_hint: bool,
     show_queue_hint: bool,
 ) {
     Paragraph::new(prefix_lines(
-        footer_from_props_lines(
-            props,
-            collaboration_mode_indicator,
-            show_cycle_hint,
-            show_shortcuts_hint,
-            show_queue_hint,
-        ),
+        footer_from_props_lines(props, show_cycle_hint, show_shortcuts_hint, show_queue_hint),
         " ".repeat(FOOTER_INDENT_COLS).into(),
         " ".repeat(FOOTER_INDENT_COLS).into(),
     ))
@@ -247,10 +293,7 @@ struct LeftSideState {
     show_cycle_hint: bool,
 }
 
-fn left_side_line(
-    collaboration_mode_indicator: Option<CollaborationModeIndicator>,
-    state: LeftSideState,
-) -> Line<'static> {
+fn left_side_line(mode_indicators: &[FooterBadge], state: LeftSideState) -> Line<'static> {
     let mut line = Line::from("");
     match state.hint {
         SummaryHintKind::None => {}
@@ -268,14 +311,36 @@ fn left_side_line(
         }
     };
 
-    if let Some(collaboration_mode_indicator) = collaboration_mode_indicator {
+    let badge_spans = mode_indicator_spans(mode_indicators, state.show_cycle_hint, false);
+    if !badge_spans.is_empty() {
         if !matches!(state.hint, SummaryHintKind::None) {
             line.push_span(" · ".dim());
         }
-        line.push_span(collaboration_mode_indicator.styled_span(state.show_cycle_hint));
+        for span in badge_spans {
+            line.push_span(span);
+        }
     }
 
     line
+}
+
+fn mode_indicator_spans(
+    mode_indicators: &[FooterBadge],
+    show_cycle_hint: bool,
+    compact: bool,
+) -> Vec<Span<'static>> {
+    let mut spans = Vec::new();
+    for (idx, badge) in mode_indicators.iter().enumerate() {
+        if idx > 0 {
+            spans.push(" · ".dim());
+        }
+        let span = match badge {
+            FooterBadge::Collaboration(indicator) => indicator.styled_span(show_cycle_hint),
+            FooterBadge::Loop(state) => state.styled_span(compact),
+        };
+        spans.push(span);
+    }
+    spans
 }
 
 pub(crate) enum SummaryLeft {
@@ -289,7 +354,7 @@ pub(crate) enum SummaryLeft {
 pub(crate) fn single_line_footer_layout(
     area: Rect,
     context_width: u16,
-    collaboration_mode_indicator: Option<CollaborationModeIndicator>,
+    mode_indicators: &[FooterBadge],
     show_cycle_hint: bool,
     show_shortcuts_hint: bool,
     show_queue_hint: bool,
@@ -305,7 +370,7 @@ pub(crate) fn single_line_footer_layout(
         hint: hint_kind,
         show_cycle_hint,
     };
-    let default_line = left_side_line(collaboration_mode_indicator, default_state);
+    let default_line = left_side_line(mode_indicators, default_state);
     let default_width = default_line.width() as u16;
     if default_width > 0 && can_show_left_with_context(area, default_width, context_width) {
         return (SummaryLeft::Default, true);
@@ -315,7 +380,7 @@ pub(crate) fn single_line_footer_layout(
         if state == default_state {
             default_line.clone()
         } else {
-            left_side_line(collaboration_mode_indicator, state)
+            left_side_line(mode_indicators, state)
         }
     };
     let state_width = |state: LeftSideState| -> u16 { state_line(state).width() as u16 };
@@ -372,7 +437,7 @@ pub(crate) fn single_line_footer_layout(
                 return (SummaryLeft::Custom(state_line(state)), false);
             }
         }
-    } else if collaboration_mode_indicator.is_some() {
+    } else if !mode_indicators.is_empty() {
         if show_cycle_hint {
             // First fallback: drop shortcut hint but keep the cycle
             // hint on the mode label if it can fit.
@@ -416,32 +481,25 @@ pub(crate) fn single_line_footer_layout(
 
     // Final fallback: if queue variants (or other earlier states) could not fit
     // at all, drop every hint and try to show just the mode label.
-    if let Some(collaboration_mode_indicator) = collaboration_mode_indicator {
+    if !mode_indicators.is_empty() {
         let mode_only_state = LeftSideState {
             hint: SummaryHintKind::None,
             show_cycle_hint: false,
         };
         // Compute the width without going through `state_line` so we do not
         // depend on `default_state` (which may still be a queue variant).
-        let mode_only_width =
-            left_side_line(Some(collaboration_mode_indicator), mode_only_state).width() as u16;
+        let mode_only_width = left_side_line(mode_indicators, mode_only_state).width() as u16;
         if !context_requires_cycle_hint
             && can_show_left_with_context(area, mode_only_width, context_width)
         {
             return (
-                SummaryLeft::Custom(left_side_line(
-                    Some(collaboration_mode_indicator),
-                    mode_only_state,
-                )),
+                SummaryLeft::Custom(left_side_line(mode_indicators, mode_only_state)),
                 true, // show_context
             );
         }
         if left_fits(area, mode_only_width) {
             return (
-                SummaryLeft::Custom(left_side_line(
-                    Some(collaboration_mode_indicator),
-                    mode_only_state,
-                )),
+                SummaryLeft::Custom(left_side_line(mode_indicators, mode_only_state)),
                 false, // show_context
             );
         }
@@ -451,10 +509,16 @@ pub(crate) fn single_line_footer_layout(
 }
 
 pub(crate) fn mode_indicator_line(
-    indicator: Option<CollaborationModeIndicator>,
+    mode_indicators: &[FooterBadge],
     show_cycle_hint: bool,
+    compact: bool,
 ) -> Option<Line<'static>> {
-    indicator.map(|indicator| Line::from(vec![indicator.styled_span(show_cycle_hint)]))
+    let spans = mode_indicator_spans(mode_indicators, show_cycle_hint, compact);
+    if spans.is_empty() {
+        None
+    } else {
+        Some(Line::from(spans))
+    }
 }
 
 fn right_aligned_x(area: Rect, content_width: u16) -> Option<u16> {
@@ -558,7 +622,6 @@ pub(crate) fn render_footer_hint_items(area: Rect, buf: &mut Buffer, items: &[(S
 /// formats the chosen/default content.
 fn footer_from_props_lines(
     props: &FooterProps,
-    collaboration_mode_indicator: Option<CollaborationModeIndicator>,
     show_cycle_hint: bool,
     show_shortcuts_hint: bool,
     show_queue_hint: bool,
@@ -586,7 +649,7 @@ fn footer_from_props_lines(
                 },
                 show_cycle_hint,
             };
-            vec![left_side_line(collaboration_mode_indicator, state)]
+            vec![left_side_line(&props.mode_indicators, state)]
         }
         FooterMode::ShortcutOverlay => {
             let state = ShortcutsState {
@@ -607,28 +670,21 @@ fn footer_from_props_lines(
                 },
                 show_cycle_hint,
             };
-            vec![left_side_line(collaboration_mode_indicator, state)]
+            vec![left_side_line(&props.mode_indicators, state)]
         }
     }
 }
 
 pub(crate) fn footer_line_width(
     props: &FooterProps,
-    collaboration_mode_indicator: Option<CollaborationModeIndicator>,
     show_cycle_hint: bool,
     show_shortcuts_hint: bool,
     show_queue_hint: bool,
 ) -> u16 {
-    footer_from_props_lines(
-        props,
-        collaboration_mode_indicator,
-        show_cycle_hint,
-        show_shortcuts_hint,
-        show_queue_hint,
-    )
-    .last()
-    .map(|line| line.width() as u16)
-    .unwrap_or(0)
+    footer_from_props_lines(props, show_cycle_hint, show_shortcuts_hint, show_queue_hint)
+        .last()
+        .map(|line| line.width() as u16)
+        .unwrap_or(0)
 }
 
 pub(crate) fn footer_hint_items_width(items: &[(String, String)]) -> u16 {
@@ -1019,12 +1075,20 @@ mod tests {
         terminal: &mut Terminal<B>,
         height: u16,
         props: &FooterProps,
-        collaboration_mode_indicator: Option<CollaborationModeIndicator>,
+        mode_indicators: Option<Vec<FooterBadge>>,
     ) {
+        let mut props = props.clone();
+        if let Some(mode_indicators) = mode_indicators {
+            props.mode_indicators = mode_indicators;
+        }
         terminal
             .draw(|f| {
                 let area = Rect::new(0, 0, f.area().width, height);
-                let show_cycle_hint = !props.is_task_running;
+                let show_cycle_hint = !props.is_task_running
+                    && props
+                        .mode_indicators
+                        .iter()
+                        .any(|badge| matches!(badge, FooterBadge::Collaboration(_)));
                 let show_shortcuts_hint = match props.mode {
                     FooterMode::ComposerEmpty => true,
                     FooterMode::QuitShortcutReminder
@@ -1039,10 +1103,10 @@ mod tests {
                     | FooterMode::ShortcutOverlay
                     | FooterMode::EscHint => false,
                 };
-                let left_mode_indicator = if props.status_line_enabled {
-                    None
+                let left_mode_indicators = if props.status_line_enabled {
+                    Vec::new()
                 } else {
-                    collaboration_mode_indicator
+                    props.mode_indicators.clone()
                 };
                 let available_width = area.width.saturating_sub(FOOTER_INDENT_COLS as u16) as usize;
                 let mut truncated_status_line = if props.status_line_enabled
@@ -1065,16 +1129,15 @@ mod tests {
                         .unwrap_or(0)
                 } else {
                     footer_line_width(
-                        props,
-                        left_mode_indicator,
+                        &props,
                         show_cycle_hint,
                         show_shortcuts_hint,
                         show_queue_hint,
                     )
                 };
                 let right_line = if props.status_line_enabled {
-                    let full = mode_indicator_line(collaboration_mode_indicator, show_cycle_hint);
-                    let compact = mode_indicator_line(collaboration_mode_indicator, false);
+                    let full = mode_indicator_line(&props.mode_indicators, show_cycle_hint, false);
+                    let compact = mode_indicator_line(&props.mode_indicators, false, true);
                     let full_width = full.as_ref().map(|line| line.width() as u16).unwrap_or(0);
                     if can_show_left_with_context(area, left_width, full_width) {
                         full
@@ -1114,7 +1177,7 @@ mod tests {
                     let (summary_left, show_context) = single_line_footer_layout(
                         area,
                         right_width,
-                        left_mode_indicator,
+                        &left_mode_indicators,
                         show_cycle_hint,
                         show_shortcuts_hint,
                         show_queue_hint,
@@ -1129,8 +1192,7 @@ mod tests {
                                 render_footer_from_props(
                                     area,
                                     f.buffer_mut(),
-                                    props,
-                                    left_mode_indicator,
+                                    &props,
                                     show_cycle_hint,
                                     show_shortcuts_hint,
                                     show_queue_hint,
@@ -1149,8 +1211,7 @@ mod tests {
                     render_footer_from_props(
                         area,
                         f.buffer_mut(),
-                        props,
-                        left_mode_indicator,
+                        &props,
                         show_cycle_hint,
                         show_shortcuts_hint,
                         show_queue_hint,
@@ -1178,7 +1239,13 @@ mod tests {
     ) {
         let height = footer_height(props).max(1);
         let mut terminal = Terminal::new(TestBackend::new(width, height)).unwrap();
-        draw_footer_frame(&mut terminal, height, props, collaboration_mode_indicator);
+        draw_footer_frame(
+            &mut terminal,
+            height,
+            props,
+            collaboration_mode_indicator
+                .map(|indicator| vec![FooterBadge::Collaboration(indicator)]),
+        );
         assert_snapshot!(name, terminal.backend());
     }
 
@@ -1187,9 +1254,22 @@ mod tests {
         props: &FooterProps,
         collaboration_mode_indicator: Option<CollaborationModeIndicator>,
     ) -> String {
+        render_footer_with_mode_indicators(
+            width,
+            props,
+            collaboration_mode_indicator
+                .map(|indicator| vec![FooterBadge::Collaboration(indicator)]),
+        )
+    }
+
+    fn render_footer_with_mode_indicators(
+        width: u16,
+        props: &FooterProps,
+        mode_indicators: Option<Vec<FooterBadge>>,
+    ) -> String {
         let height = footer_height(props).max(1);
         let mut terminal = Terminal::new(VT100Backend::new(width, height)).expect("terminal");
-        draw_footer_frame(&mut terminal, height, props, collaboration_mode_indicator);
+        draw_footer_frame(&mut terminal, height, props, mode_indicators);
         terminal.backend().vt100().screen().contents()
     }
 
@@ -1208,6 +1288,7 @@ mod tests {
                 quit_shortcut_key: key_hint::ctrl(KeyCode::Char('c')),
                 context_window_percent: None,
                 context_window_used_tokens: None,
+                mode_indicators: Vec::new(),
                 status_line_value: None,
                 status_line_enabled: false,
             },
@@ -1226,6 +1307,7 @@ mod tests {
                 quit_shortcut_key: key_hint::ctrl(KeyCode::Char('c')),
                 context_window_percent: None,
                 context_window_used_tokens: None,
+                mode_indicators: Vec::new(),
                 status_line_value: None,
                 status_line_enabled: false,
             },
@@ -1244,6 +1326,7 @@ mod tests {
                 quit_shortcut_key: key_hint::ctrl(KeyCode::Char('c')),
                 context_window_percent: None,
                 context_window_used_tokens: None,
+                mode_indicators: Vec::new(),
                 status_line_value: None,
                 status_line_enabled: false,
             },
@@ -1262,6 +1345,7 @@ mod tests {
                 quit_shortcut_key: key_hint::ctrl(KeyCode::Char('c')),
                 context_window_percent: None,
                 context_window_used_tokens: None,
+                mode_indicators: Vec::new(),
                 status_line_value: None,
                 status_line_enabled: false,
             },
@@ -1280,6 +1364,7 @@ mod tests {
                 quit_shortcut_key: key_hint::ctrl(KeyCode::Char('c')),
                 context_window_percent: None,
                 context_window_used_tokens: None,
+                mode_indicators: Vec::new(),
                 status_line_value: None,
                 status_line_enabled: false,
             },
@@ -1298,6 +1383,7 @@ mod tests {
                 quit_shortcut_key: key_hint::ctrl(KeyCode::Char('c')),
                 context_window_percent: None,
                 context_window_used_tokens: None,
+                mode_indicators: Vec::new(),
                 status_line_value: None,
                 status_line_enabled: false,
             },
@@ -1316,6 +1402,7 @@ mod tests {
                 quit_shortcut_key: key_hint::ctrl(KeyCode::Char('c')),
                 context_window_percent: None,
                 context_window_used_tokens: None,
+                mode_indicators: Vec::new(),
                 status_line_value: None,
                 status_line_enabled: false,
             },
@@ -1334,6 +1421,7 @@ mod tests {
                 quit_shortcut_key: key_hint::ctrl(KeyCode::Char('c')),
                 context_window_percent: Some(72),
                 context_window_used_tokens: None,
+                mode_indicators: Vec::new(),
                 status_line_value: None,
                 status_line_enabled: false,
             },
@@ -1352,6 +1440,7 @@ mod tests {
                 quit_shortcut_key: key_hint::ctrl(KeyCode::Char('c')),
                 context_window_percent: None,
                 context_window_used_tokens: Some(123_456),
+                mode_indicators: Vec::new(),
                 status_line_value: None,
                 status_line_enabled: false,
             },
@@ -1370,6 +1459,7 @@ mod tests {
                 quit_shortcut_key: key_hint::ctrl(KeyCode::Char('c')),
                 context_window_percent: None,
                 context_window_used_tokens: None,
+                mode_indicators: Vec::new(),
                 status_line_value: None,
                 status_line_enabled: false,
             },
@@ -1388,6 +1478,7 @@ mod tests {
                 quit_shortcut_key: key_hint::ctrl(KeyCode::Char('c')),
                 context_window_percent: None,
                 context_window_used_tokens: None,
+                mode_indicators: Vec::new(),
                 status_line_value: None,
                 status_line_enabled: false,
             },
@@ -1404,6 +1495,7 @@ mod tests {
             quit_shortcut_key: key_hint::ctrl(KeyCode::Char('c')),
             context_window_percent: None,
             context_window_used_tokens: None,
+            mode_indicators: Vec::new(),
             status_line_value: None,
             status_line_enabled: false,
         };
@@ -1433,6 +1525,7 @@ mod tests {
             quit_shortcut_key: key_hint::ctrl(KeyCode::Char('c')),
             context_window_percent: None,
             context_window_used_tokens: None,
+            mode_indicators: Vec::new(),
             status_line_value: None,
             status_line_enabled: false,
         };
@@ -1455,6 +1548,7 @@ mod tests {
             quit_shortcut_key: key_hint::ctrl(KeyCode::Char('c')),
             context_window_percent: None,
             context_window_used_tokens: None,
+            mode_indicators: Vec::new(),
             status_line_value: Some(Line::from("Status line content".to_string())),
             status_line_enabled: true,
         };
@@ -1472,6 +1566,7 @@ mod tests {
             quit_shortcut_key: key_hint::ctrl(KeyCode::Char('c')),
             context_window_percent: Some(50),
             context_window_used_tokens: None,
+            mode_indicators: Vec::new(),
             status_line_value: None, // command timed out / empty
             status_line_enabled: true,
         };
@@ -1494,6 +1589,7 @@ mod tests {
             quit_shortcut_key: key_hint::ctrl(KeyCode::Char('c')),
             context_window_percent: Some(50),
             context_window_used_tokens: None,
+            mode_indicators: Vec::new(),
             status_line_value: None,
             status_line_enabled: false,
         };
@@ -1516,6 +1612,7 @@ mod tests {
             quit_shortcut_key: key_hint::ctrl(KeyCode::Char('c')),
             context_window_percent: Some(50),
             context_window_used_tokens: None,
+            mode_indicators: Vec::new(),
             status_line_value: None,
             status_line_enabled: true,
         };
@@ -1539,6 +1636,7 @@ mod tests {
             quit_shortcut_key: key_hint::ctrl(KeyCode::Char('c')),
             context_window_percent: Some(50),
             context_window_used_tokens: None,
+            mode_indicators: Vec::new(),
             status_line_value: Some(Line::from(
                 "Status line content that should truncate before the mode indicator".to_string(),
             )),
@@ -1566,6 +1664,7 @@ mod tests {
             quit_shortcut_key: key_hint::ctrl(KeyCode::Char('c')),
             context_window_percent: Some(50),
             context_window_used_tokens: None,
+            mode_indicators: Vec::new(),
             status_line_value: Some(Line::from(
                 "Status line content that is definitely too long to fit alongside the mode label"
                     .to_string(),
@@ -1588,6 +1687,96 @@ mod tests {
             screen.contains('…'),
             "status line should be truncated with ellipsis to keep mode indicator"
         );
+    }
+
+    #[test]
+    fn footer_loop_badge_renders_pending_and_running_labels() {
+        let props = FooterProps {
+            mode: FooterMode::ComposerEmpty,
+            esc_backtrack_hint: false,
+            use_shift_enter_hint: false,
+            is_task_running: false,
+            steer_enabled: false,
+            collaboration_modes_enabled: false,
+            is_wsl: false,
+            quit_shortcut_key: key_hint::ctrl(KeyCode::Char('c')),
+            context_window_percent: None,
+            context_window_used_tokens: None,
+            mode_indicators: Vec::new(),
+            status_line_value: Some(Line::from("Status line content".to_string())),
+            status_line_enabled: true,
+        };
+
+        let pending = render_footer_with_mode_indicators(
+            120,
+            &props,
+            Some(vec![FooterBadge::Loop(LoopIndicatorState {
+                iteration: 0,
+                max_iterations: 100,
+                status: LoopIndicatorStatus::Pending,
+            })]),
+        );
+        assert!(pending.contains("Loop pending"), "footer: {pending:?}");
+
+        let running = render_footer_with_mode_indicators(
+            120,
+            &props,
+            Some(vec![FooterBadge::Loop(LoopIndicatorState {
+                iteration: 4,
+                max_iterations: 100,
+                status: LoopIndicatorStatus::Running,
+            })]),
+        );
+        assert!(running.contains("Loop 4/100"), "footer: {running:?}");
+    }
+
+    #[test]
+    fn footer_combines_collaboration_and_loop_badges() {
+        let props = FooterProps {
+            mode: FooterMode::ComposerEmpty,
+            esc_backtrack_hint: false,
+            use_shift_enter_hint: false,
+            is_task_running: false,
+            steer_enabled: false,
+            collaboration_modes_enabled: true,
+            is_wsl: false,
+            quit_shortcut_key: key_hint::ctrl(KeyCode::Char('c')),
+            context_window_percent: None,
+            context_window_used_tokens: None,
+            mode_indicators: Vec::new(),
+            status_line_value: Some(Line::from("Status line content".to_string())),
+            status_line_enabled: true,
+        };
+
+        let wide = render_footer_with_mode_indicators(
+            120,
+            &props,
+            Some(vec![
+                FooterBadge::Collaboration(CollaborationModeIndicator::Plan),
+                FooterBadge::Loop(LoopIndicatorState {
+                    iteration: 4,
+                    max_iterations: 100,
+                    status: LoopIndicatorStatus::Running,
+                }),
+            ]),
+        );
+        assert!(wide.contains("Plan mode"), "footer: {wide:?}");
+        assert!(wide.contains("Loop 4/100"), "footer: {wide:?}");
+
+        let compact = render_footer_with_mode_indicators(
+            48,
+            &props,
+            Some(vec![
+                FooterBadge::Collaboration(CollaborationModeIndicator::Plan),
+                FooterBadge::Loop(LoopIndicatorState {
+                    iteration: 4,
+                    max_iterations: 100,
+                    status: LoopIndicatorStatus::Running,
+                }),
+            ]),
+        );
+        assert!(compact.contains("Plan"), "footer: {compact:?}");
+        assert!(compact.contains("Loop"), "footer: {compact:?}");
     }
 
     #[test]

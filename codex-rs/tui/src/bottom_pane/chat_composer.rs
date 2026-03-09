@@ -111,8 +111,10 @@ use super::command_popup::CommandPopup;
 use super::command_popup::CommandPopupFlags;
 use super::file_search_popup::FileSearchPopup;
 use super::footer::CollaborationModeIndicator;
+use super::footer::FooterBadge;
 use super::footer::FooterMode;
 use super::footer::FooterProps;
+use super::footer::LoopIndicatorState;
 use super::footer::SummaryLeft;
 use super::footer::can_show_left_with_context;
 use super::footer::context_window_line;
@@ -295,7 +297,7 @@ pub(crate) struct ChatComposer {
     steer_enabled: bool,
     collaboration_modes_enabled: bool,
     config: ChatComposerConfig,
-    collaboration_mode_indicator: Option<CollaborationModeIndicator>,
+    mode_indicators: Vec<FooterBadge>,
     connectors_enabled: bool,
     personality_command_enabled: bool,
     windows_degraded_sandbox_active: bool,
@@ -386,7 +388,7 @@ impl ChatComposer {
             steer_enabled: false,
             collaboration_modes_enabled: false,
             config,
-            collaboration_mode_indicator: None,
+            mode_indicators: Vec::new(),
             connectors_enabled: false,
             personality_command_enabled: false,
             windows_degraded_sandbox_active: false,
@@ -436,11 +438,46 @@ impl ChatComposer {
         self.connectors_enabled = enabled;
     }
 
+    #[cfg(test)]
+    pub(crate) fn mode_indicators(&self) -> &[FooterBadge] {
+        &self.mode_indicators
+    }
+
     pub fn set_collaboration_mode_indicator(
         &mut self,
         indicator: Option<CollaborationModeIndicator>,
     ) {
-        self.collaboration_mode_indicator = indicator;
+        self.replace_mode_indicator(
+            |badge| matches!(badge, FooterBadge::Collaboration(_)),
+            indicator.map(FooterBadge::Collaboration),
+            true,
+        );
+    }
+
+    pub fn set_loop_indicator(&mut self, indicator: Option<LoopIndicatorState>) {
+        self.replace_mode_indicator(
+            |badge| matches!(badge, FooterBadge::Loop(_)),
+            indicator.map(FooterBadge::Loop),
+            false,
+        );
+    }
+
+    fn replace_mode_indicator<F>(
+        &mut self,
+        predicate: F,
+        badge: Option<FooterBadge>,
+        insert_front: bool,
+    ) where
+        F: Fn(&FooterBadge) -> bool,
+    {
+        self.mode_indicators.retain(|existing| !predicate(existing));
+        if let Some(badge) = badge {
+            if insert_front {
+                self.mode_indicators.insert(0, badge);
+            } else {
+                self.mode_indicators.push(badge);
+            }
+        }
     }
 
     pub fn set_personality_command_enabled(&mut self, enabled: bool) {
@@ -2532,6 +2569,7 @@ impl ChatComposer {
             is_wsl,
             context_window_percent: self.context_window_percent,
             context_window_used_tokens: self.context_window_used_tokens,
+            mode_indicators: self.mode_indicators.clone(),
             status_line_value: self.status_line_value.clone(),
             status_line_enabled: self.status_line_enabled,
         }
@@ -3099,8 +3137,11 @@ impl ChatComposer {
             }
             ActivePopup::None => {
                 let footer_props = self.footer_props();
-                let show_cycle_hint =
-                    !footer_props.is_task_running && self.collaboration_mode_indicator.is_some();
+                let has_collaboration_indicator = self
+                    .mode_indicators
+                    .iter()
+                    .any(|badge| matches!(badge, FooterBadge::Collaboration(_)));
+                let show_cycle_hint = !footer_props.is_task_running && has_collaboration_indicator;
                 let show_shortcuts_hint = match footer_props.mode {
                     FooterMode::ComposerEmpty => !self.is_in_paste_burst(),
                     FooterMode::QuitShortcutReminder
@@ -3150,10 +3191,10 @@ impl ChatComposer {
                     None
                 };
                 let status_line_active = status_line_candidate && truncated_status_line.is_some();
-                let left_mode_indicator = if status_line_active {
-                    None
+                let left_mode_indicators = if status_line_active {
+                    Vec::new()
                 } else {
-                    self.collaboration_mode_indicator
+                    self.mode_indicators.clone()
                 };
                 let mut left_width = if self.footer_flash_visible() {
                     self.footer_flash
@@ -3170,16 +3211,14 @@ impl ChatComposer {
                 } else {
                     footer_line_width(
                         &footer_props,
-                        left_mode_indicator,
                         show_cycle_hint,
                         show_shortcuts_hint,
                         show_queue_hint,
                     )
                 };
                 let right_line = if status_line_active {
-                    let full =
-                        mode_indicator_line(self.collaboration_mode_indicator, show_cycle_hint);
-                    let compact = mode_indicator_line(self.collaboration_mode_indicator, false);
+                    let full = mode_indicator_line(&self.mode_indicators, show_cycle_hint, false);
+                    let compact = mode_indicator_line(&self.mode_indicators, false, true);
                     let full_width = full.as_ref().map(|l| l.width() as u16).unwrap_or(0);
                     if can_show_left_with_context(hint_rect, left_width, full_width) {
                         full
@@ -3219,7 +3258,7 @@ impl ChatComposer {
                             Some(single_line_footer_layout(
                                 hint_rect,
                                 right_width,
-                                left_mode_indicator,
+                                &left_mode_indicators,
                                 show_cycle_hint,
                                 show_shortcuts_hint,
                                 show_queue_hint,
@@ -3255,7 +3294,6 @@ impl ChatComposer {
                                         hint_rect,
                                         buf,
                                         &footer_props,
-                                        left_mode_indicator,
                                         show_cycle_hint,
                                         show_shortcuts_hint,
                                         show_queue_hint,
@@ -3266,7 +3304,6 @@ impl ChatComposer {
                                     hint_rect,
                                     buf,
                                     &footer_props,
-                                    left_mode_indicator,
                                     show_cycle_hint,
                                     show_shortcuts_hint,
                                     show_queue_hint,
@@ -3293,7 +3330,6 @@ impl ChatComposer {
                         hint_rect,
                         buf,
                         &footer_props,
-                        self.collaboration_mode_indicator,
                         show_cycle_hint,
                         show_shortcuts_hint,
                         show_queue_hint,

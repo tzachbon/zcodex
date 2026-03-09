@@ -68,6 +68,10 @@ mod skill_popup;
 mod skills_toggle_view;
 mod slash_commands;
 pub(crate) use footer::CollaborationModeIndicator;
+#[cfg(test)]
+pub(crate) use footer::FooterBadge;
+pub(crate) use footer::LoopIndicatorState;
+pub(crate) use footer::LoopIndicatorStatus;
 pub(crate) use list_selection_view::ColumnWidthMode;
 pub(crate) use list_selection_view::SelectionViewParams;
 mod feedback_view;
@@ -263,6 +267,16 @@ impl BottomPane {
     ) {
         self.composer.set_collaboration_mode_indicator(indicator);
         self.request_redraw();
+    }
+
+    pub fn set_loop_indicator(&mut self, indicator: Option<LoopIndicatorState>) {
+        self.composer.set_loop_indicator(indicator);
+        self.request_redraw();
+    }
+
+    #[cfg(test)]
+    pub(crate) fn mode_indicators(&self) -> &[FooterBadge] {
+        self.composer.mode_indicators()
     }
 
     pub fn set_personality_command_enabled(&mut self, enabled: bool) {

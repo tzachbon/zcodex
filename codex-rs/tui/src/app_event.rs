@@ -19,6 +19,7 @@ use codex_protocol::ThreadId;
 use codex_protocol::openai_models::ModelPreset;
 
 use crate::bottom_pane::ApprovalRequest;
+use crate::bottom_pane::LocalImageAttachment;
 use crate::bottom_pane::StatusLineItem;
 use crate::history_cell::HistoryCell;
 
@@ -28,6 +29,7 @@ use codex_core::protocol::SandboxPolicy;
 use codex_protocol::config_types::CollaborationModeMask;
 use codex_protocol::config_types::Personality;
 use codex_protocol::openai_models::ReasoningEffort;
+use codex_protocol::user_input::TextElement;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[cfg_attr(not(target_os = "windows"), allow(dead_code))]
@@ -276,6 +278,17 @@ pub(crate) enum AppEvent {
         text: String,
         collaboration_mode: CollaborationModeMask,
     },
+
+    /// Start a foreground loop in the current session.
+    StartLoop {
+        prompt: String,
+        text_elements: Vec<TextElement>,
+        local_images: Vec<LocalImageAttachment>,
+        stop_phrase: String,
+    },
+
+    /// Resume post-turn automation deferred by a transient popup.
+    ResumePendingPostTurnProgression,
 
     /// Open the approval popup.
     FullScreenApprovalRequest(ApprovalRequest),
