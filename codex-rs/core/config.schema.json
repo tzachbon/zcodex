@@ -380,6 +380,52 @@
         }
       ]
     },
+    "HooksConfig": {
+      "additionalProperties": false,
+      "properties": {
+        "after_agent": {
+          "default": [],
+          "items": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "type": "array"
+        },
+        "after_tool": {
+          "default": [],
+          "items": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "type": "array"
+        },
+        "session_resume": {
+          "default": [],
+          "items": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "type": "array"
+        },
+        "session_start": {
+          "default": [],
+          "items": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "type": "array"
+        }
+      },
+      "type": "object"
+    },
     "ModeKind": {
       "description": "Initial collaboration mode to use when the TUI starts.",
       "enum": [
@@ -1347,6 +1393,20 @@
       ],
       "default": null,
       "description": "Settings that govern if and what will be written to `~/.codex/history.jsonl`."
+    },
+    "hooks": {
+      "allOf": [
+        {
+          "$ref": "#/definitions/HooksConfig"
+        }
+      ],
+      "default": {
+        "after_agent": [],
+        "after_tool": [],
+        "session_resume": [],
+        "session_start": []
+      },
+      "description": "Generic lifecycle hooks configured from `config.toml`."
     },
     "instructions": {
       "description": "System instructions.",

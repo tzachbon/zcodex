@@ -9,15 +9,20 @@ use crate::tools::handlers::parse_arguments;
 use crate::tools::registry::ToolHandler;
 use crate::tools::registry::ToolKind;
 use codex_protocol::config_types::ModeKind;
-use codex_protocol::config_types::TUI_VISIBLE_COLLABORATION_MODES;
 use codex_protocol::request_user_input::RequestUserInputArgs;
 
 fn format_allowed_modes() -> String {
-    let mode_names: Vec<&str> = TUI_VISIBLE_COLLABORATION_MODES
-        .into_iter()
-        .filter(|mode| mode.allows_request_user_input())
-        .map(ModeKind::display_name)
-        .collect();
+    let mode_names: Vec<&str> = [
+        ModeKind::Plan,
+        ModeKind::ConversationPlan,
+        ModeKind::Default,
+        ModeKind::Execute,
+        ModeKind::PairProgramming,
+    ]
+    .into_iter()
+    .filter(|mode| mode.allows_request_user_input())
+    .map(ModeKind::display_name)
+    .collect();
 
     match mode_names.as_slice() {
         [] => "no modes".to_string(),
@@ -119,6 +124,7 @@ mod tests {
     #[test]
     fn request_user_input_mode_availability_is_plan_only() {
         assert!(ModeKind::Plan.allows_request_user_input());
+        assert!(ModeKind::ConversationPlan.allows_request_user_input());
         assert!(!ModeKind::Default.allows_request_user_input());
         assert!(!ModeKind::Execute.allows_request_user_input());
         assert!(!ModeKind::PairProgramming.allows_request_user_input());
@@ -139,13 +145,17 @@ mod tests {
             request_user_input_unavailable_message(ModeKind::PairProgramming),
             Some("request_user_input is unavailable in Pair Programming mode".to_string())
         );
+        assert_eq!(
+            request_user_input_unavailable_message(ModeKind::ConversationPlan),
+            None
+        );
     }
 
     #[test]
     fn request_user_input_tool_description_mentions_plan_only() {
         assert_eq!(
             request_user_input_tool_description(),
-            "Request user input for one to three short questions and wait for the response. This tool is only available in Plan mode.".to_string()
+            "Request user input for one to three short questions and wait for the response. This tool is only available in Plan or Conversation Plan mode.".to_string()
         );
     }
 }

@@ -182,6 +182,10 @@ pub enum ModeKind {
     )]
     Default,
     #[doc(hidden)]
+    #[schemars(skip)]
+    #[ts(skip)]
+    ConversationPlan,
+    #[doc(hidden)]
     #[serde(skip_serializing, skip_deserializing)]
     #[schemars(skip)]
     #[ts(skip)]
@@ -200,6 +204,7 @@ impl ModeKind {
         match self {
             Self::Plan => "Plan",
             Self::Default => "Default",
+            Self::ConversationPlan => "Conversation Plan",
             Self::PairProgramming => "Pair Programming",
             Self::Execute => "Execute",
         }
@@ -210,7 +215,7 @@ impl ModeKind {
     }
 
     pub const fn allows_request_user_input(self) -> bool {
-        matches!(self, Self::Plan)
+        matches!(self, Self::Plan | Self::ConversationPlan)
     }
 }
 
@@ -344,6 +349,24 @@ mod tests {
             let mode: ModeKind = serde_json::from_str(&json).expect("deserialize mode");
             assert_eq!(ModeKind::Default, mode);
         }
+    }
+
+    #[test]
+    fn collaboration_mode_roundtrips_conversation_plan() {
+        let mode = CollaborationMode {
+            mode: ModeKind::ConversationPlan,
+            settings: Settings {
+                model: "gpt-5.2-codex".to_string(),
+                reasoning_effort: Some(ReasoningEffort::Medium),
+                developer_instructions: Some("conversation plan".to_string()),
+            },
+        };
+
+        let json = serde_json::to_string(&mode).expect("serialize collaboration mode");
+        let decoded: CollaborationMode =
+            serde_json::from_str(&json).expect("deserialize collaboration mode");
+
+        assert_eq!(decoded, mode);
     }
 
     #[test]

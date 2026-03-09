@@ -26,6 +26,19 @@ enum UserNotification {
         /// The last message sent by the assistant in the turn.
         last_assistant_message: Option<String>,
     },
+    #[serde(rename_all = "kebab-case")]
+    AfterTool {
+        thread_id: String,
+        turn_id: String,
+        call_id: String,
+        tool_name: String,
+        success: bool,
+        cwd: String,
+    },
+    #[serde(rename_all = "kebab-case")]
+    SessionStart { thread_id: String, cwd: String },
+    #[serde(rename_all = "kebab-case")]
+    SessionResume { thread_id: String, cwd: String },
 }
 
 pub(super) fn legacy_notify_json(
@@ -39,6 +52,22 @@ pub(super) fn legacy_notify_json(
             cwd: cwd.display().to_string(),
             input_messages: event.input_messages.clone(),
             last_assistant_message: event.last_assistant_message.clone(),
+        },
+        HookEvent::AfterTool { event } => UserNotification::AfterTool {
+            thread_id: event.thread_id.to_string(),
+            turn_id: event.turn_id.clone(),
+            call_id: event.call_id.clone(),
+            tool_name: event.tool_name.clone(),
+            success: event.success,
+            cwd: cwd.display().to_string(),
+        },
+        HookEvent::SessionStart { event } => UserNotification::SessionStart {
+            thread_id: event.thread_id.to_string(),
+            cwd: cwd.display().to_string(),
+        },
+        HookEvent::SessionResume { event } => UserNotification::SessionResume {
+            thread_id: event.thread_id.to_string(),
+            cwd: cwd.display().to_string(),
         },
     })
 }
@@ -126,6 +155,35 @@ mod tests {
         let serialized = legacy_notify_json(&hook_event, Path::new("/Users/example/project"))?;
         let actual: Value = serde_json::from_str(&serialized)?;
         assert_eq!(actual, expected_notification_json());
+
+        Ok(())
+    }
+
+    #[test]
+    fn after_tool_notifications_use_structured_shape() -> Result<()> {
+        let hook_event = HookEvent::AfterTool {
+            event: super::super::types::HookEventAfterTool {
+                thread_id: ThreadId::from_string("b5f6c1c2-1111-2222-3333-444455556666")
+                    .expect("valid thread id"),
+                turn_id: "12345".to_string(),
+                call_id: "call-1".to_string(),
+                tool_name: "shell".to_string(),
+                success: true,
+            },
+        };
+
+        let serialized = legacy_notify_json(&hook_event, Path::new("/Users/example/project"))?;
+        let actual: Value = serde_json::from_str(&serialized)?;
+        let expected = json!({
+            "type": "after-tool",
+            "thread-id": "b5f6c1c2-1111-2222-3333-444455556666",
+            "turn-id": "12345",
+            "call-id": "call-1",
+            "tool-name": "shell",
+            "success": true,
+            "cwd": "/Users/example/project",
+        });
+        assert_eq!(actual, expected);
 
         Ok(())
     }

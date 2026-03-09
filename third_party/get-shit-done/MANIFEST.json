@@ -1,0 +1,10 @@
+{
+  "repo": "https://github.com/gsd-build/get-shit-done",
+  "integration": "native codex workflow registry",
+  "revision": "2eaed7a8475839958f9ec76ca4c26d9a0bbfc33f",
+  "pinned_at": "2026-03-09",
+  "notes": [
+    "This repo vendors the GSD integration as native Codex commands and prompt templates.",
+    "The prompt and workflow layer is normalized under codex-rs/core/templates/gsd."
+  ]
+}

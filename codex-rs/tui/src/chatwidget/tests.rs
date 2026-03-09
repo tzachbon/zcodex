@@ -1353,12 +1353,14 @@ async fn plan_implementation_popup_yes_emits_submit_message_event() {
     let AppEvent::SubmitUserMessageWithMode {
         text,
         collaboration_mode,
+        cwd,
     } = event
     else {
         panic!("expected SubmitUserMessageWithMode, got {event:?}");
     };
     assert_eq!(text, PLAN_IMPLEMENTATION_CODING_MESSAGE);
     assert_eq!(collaboration_mode.mode, Some(ModeKind::Default));
+    assert_eq!(cwd, chat.config.cwd);
 }
 
 #[tokio::test]
@@ -1369,10 +1371,16 @@ async fn submit_user_message_with_mode_sets_coding_collaboration_mode() {
 
     let default_mode = collaboration_modes::default_mode_mask(chat.models_manager.as_ref())
         .expect("expected default collaboration mode");
-    chat.submit_user_message_with_mode("Implement the plan.".to_string(), default_mode);
+    let submit_cwd = chat.config.cwd.join("subdir");
+    chat.submit_user_message_with_mode(
+        "Implement the plan.".to_string(),
+        default_mode,
+        submit_cwd.clone(),
+    );
 
     match next_submit_op(&mut op_rx) {
         Op::UserTurn {
+            cwd,
             collaboration_mode:
                 Some(CollaborationMode {
                     mode: ModeKind::Default,
@@ -1380,7 +1388,7 @@ async fn submit_user_message_with_mode_sets_coding_collaboration_mode() {
                 }),
             personality: None,
             ..
-        } => {}
+        } => assert_eq!(cwd, submit_cwd),
         other => {
             panic!("expected Op::UserTurn with default collab mode, got {other:?}")
         }
@@ -2608,7 +2616,7 @@ async fn collab_slash_command_opens_picker_and_updates_mode() {
 }
 
 #[tokio::test]
-async fn plan_slash_command_switches_to_plan_mode() {
+async fn plan_slash_command_opens_planning_hub() {
     let (mut chat, mut rx, _op_rx) = make_chatwidget_manual(None).await;
     chat.set_feature_enabled(Feature::CollaborationModes, true);
     let initial = chat.current_collaboration_mode().clone();
@@ -2616,12 +2624,17 @@ async fn plan_slash_command_switches_to_plan_mode() {
     chat.dispatch_command(SlashCommand::Plan);
 
     assert!(rx.try_recv().is_err(), "plan should not emit an app event");
-    assert_eq!(chat.active_collaboration_mode_kind(), ModeKind::Plan);
+    let popup = render_bottom_popup(&chat, 80);
+    assert!(
+        popup.contains("Planning Hub"),
+        "expected planning hub: {popup}"
+    );
+    assert_eq!(chat.active_collaboration_mode_kind(), ModeKind::Default);
     assert_eq!(chat.current_collaboration_mode(), &initial);
 }
 
 #[tokio::test]
-async fn plan_slash_command_with_args_submits_prompt_in_plan_mode() {
+async fn plan_phase_slash_command_with_args_submits_gsd_prompt() {
     let (mut chat, _rx, mut op_rx) = make_chatwidget_manual(None).await;
     chat.set_feature_enabled(Feature::CollaborationModes, true);
 
@@ -2646,22 +2659,69 @@ async fn plan_slash_command_with_args_submits_prompt_in_plan_mode() {
     });
 
     chat.bottom_pane
-        .set_composer_text("/plan build the plan".to_string(), Vec::new(), Vec::new());
-    chat.handle_key_event(KeyEvent::from(KeyCode::Enter));
+        .set_composer_text("/plan-phase 1".to_string(), Vec::new(), Vec::new());
+    chat.dispatch_command_with_args(SlashCommand::PlanPhase, "1".to_string(), Vec::new());
 
     let items = match next_submit_op(&mut op_rx) {
         Op::UserTurn { items, .. } => items,
         other => panic!("expected Op::UserTurn, got {other:?}"),
     };
     assert_eq!(items.len(), 1);
-    assert_eq!(
-        items[0],
-        UserInput::Text {
-            text: "build the plan".to_string(),
-            text_elements: Vec::new(),
-        }
-    );
+    let UserInput::Text {
+        text,
+        text_elements,
+    } = &items[0]
+    else {
+        panic!("expected text user input, got {:?}", items[0]);
+    };
+    assert!(text.contains("visible_name: /plan-phase"));
+    assert!(text.contains("Inline arguments: `1`."));
+    assert_eq!(text_elements, &Vec::new());
     assert_eq!(chat.active_collaboration_mode_kind(), ModeKind::Plan);
+}
+
+#[tokio::test]
+async fn plan_phase_slash_command_requires_collaboration_modes() {
+    let (mut chat, mut rx, mut op_rx) = make_chatwidget_manual(None).await;
+    chat.set_feature_enabled(Feature::CollaborationModes, false);
+
+    let configured = codex_core::protocol::SessionConfiguredEvent {
+        session_id: ThreadId::new(),
+        forked_from_id: None,
+        thread_name: None,
+        model: "test-model".to_string(),
+        model_provider_id: "test-provider".to_string(),
+        approval_policy: AskForApproval::Never,
+        sandbox_policy: SandboxPolicy::ReadOnly,
+        cwd: PathBuf::from("/home/user/project"),
+        reasoning_effort: Some(ReasoningEffortConfig::default()),
+        history_log_id: 0,
+        history_entry_count: 0,
+        initial_messages: None,
+        rollout_path: None,
+    };
+    chat.handle_codex_event(Event {
+        id: "configured".into(),
+        msg: EventMsg::SessionConfigured(configured),
+    });
+
+    chat.bottom_pane
+        .set_composer_text("/plan-phase 1".to_string(), Vec::new(), Vec::new());
+    chat.handle_key_event(KeyEvent::from(KeyCode::Enter));
+
+    while let Ok(op) = op_rx.try_recv() {
+        assert!(
+            !matches!(op, Op::UserTurn { .. }),
+            "expected no user turn submission, got {op:?}"
+        );
+    }
+    let history_cells = drain_insert_history(&mut rx);
+    let history = history_cells
+        .iter()
+        .map(|lines| lines_to_single_string(lines))
+        .collect::<Vec<_>>()
+        .join("\n");
+    assert!(history.contains("Collaboration modes are disabled."));
 }
 
 #[tokio::test]

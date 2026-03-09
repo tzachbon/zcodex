@@ -7,6 +7,7 @@ use std::sync::OnceLock;
 use std::time::Duration;
 
 use async_trait::async_trait;
+use codex_protocol::models::FunctionCallOutputBody;
 use codex_protocol::models::ResponseInputItem;
 use codex_utils_readiness::Readiness;
 use tracing::error;
@@ -16,6 +17,9 @@ use tracing::warn;
 use crate::client_common::tools::ToolSpec;
 use crate::exec::SandboxType;
 use crate::function_tool::FunctionCallError;
+use crate::hooks::HookEvent;
+use crate::hooks::HookEventAfterTool;
+use crate::hooks::HookPayload;
 use crate::protocol::SandboxPolicy;
 use crate::safety::get_platform_sandbox;
 use crate::tools::context::ToolInvocation;
@@ -220,6 +224,8 @@ impl ToolRegistry {
     ) -> Result<ResponseInputItem, FunctionCallError> {
         let tool_name = invocation.tool_name.clone();
         let call_id_owned = invocation.call_id.clone();
+        let hook_session = invocation.session.clone();
+        let hook_turn = invocation.turn.clone();
         let otel = invocation.turn.otel_manager.clone();
         let payload_for_response = invocation.payload.clone();
         let log_payload = payload_for_response.log_payload();
@@ -242,6 +248,7 @@ impl ToolRegistry {
             None => {
                 let message =
                     unsupported_tool_call_message(&invocation.payload, tool_name.as_ref());
+                let error = FunctionCallError::RespondToModel(message.clone());
                 otel.tool_result_with_tags(
                     tool_name.as_ref(),
                     &call_id_owned,
@@ -251,12 +258,21 @@ impl ToolRegistry {
                     &message,
                     &metric_tags,
                 );
-                return Err(FunctionCallError::RespondToModel(message));
+                dispatch_after_tool_hook(
+                    hook_session.as_ref(),
+                    hook_turn.as_ref(),
+                    &tool_name,
+                    &call_id_owned,
+                    &tool_output_for_error(&error),
+                )
+                .await;
+                return Err(error);
             }
         };
 
         if !handler.matches_kind(&invocation.payload) {
             let message = format!("tool {tool_name} invoked with incompatible payload");
+            let error = FunctionCallError::Fatal(message.clone());
             otel.tool_result_with_tags(
                 tool_name.as_ref(),
                 &call_id_owned,
@@ -266,7 +282,15 @@ impl ToolRegistry {
                 &message,
                 &metric_tags,
             );
-            return Err(FunctionCallError::Fatal(message));
+            dispatch_after_tool_hook(
+                hook_session.as_ref(),
+                hook_turn.as_ref(),
+                &tool_name,
+                &call_id_owned,
+                &tool_output_for_error(&error),
+            )
+            .await;
+            return Err(error);
         }
 
         // If interceptors are registered for this tool, compose them; otherwise call handler.
@@ -277,6 +301,7 @@ impl ToolRegistry {
             if let Some(interceptor) = list.first() {
                 let next_handler = handler.clone();
                 let call_id_owned = invocation.call_id.clone();
+                let output_cell = tokio::sync::Mutex::new(None);
                 let result = otel
                     .log_tool_result_with_tags(
                         tool_name.as_ref(),
@@ -286,6 +311,7 @@ impl ToolRegistry {
                         || {
                             let interceptor = interceptor.clone();
                             let next_handler = next_handler.clone();
+                            let output_cell = &output_cell;
                             let invocation = invocation.clone();
                             async move {
                                 let next = move |inv: ToolInvocation| {
@@ -309,6 +335,8 @@ impl ToolRegistry {
                                     Ok(output) => {
                                         let preview = output.log_preview();
                                         let success = output.success_for_logging();
+                                        let mut guard = output_cell.lock().await;
+                                        *guard = Some(output);
                                         Ok((preview, success))
                                     }
                                     Err(err) => Err(err),
@@ -320,14 +348,33 @@ impl ToolRegistry {
 
                 return match result {
                     Ok(_) => {
-                        // We need to re-run the interceptor to actually get the ToolOutput to return.
-                        // To avoid double-call, simply call the handler and ignore preview/success;
-                        // The otel log already captured the metadata.
-                        wait_for_tool_gate_if_needed(&handler, &invocation).await;
-                        let out = handler.handle(invocation).await?;
+                        let mut guard = output_cell.lock().await;
+                        let out = guard.take().ok_or_else(|| {
+                            FunctionCallError::Fatal(
+                                "interceptor produced no tool output".to_string(),
+                            )
+                        })?;
+                        dispatch_after_tool_hook(
+                            hook_session.as_ref(),
+                            hook_turn.as_ref(),
+                            &tool_name,
+                            &call_id_owned,
+                            &out,
+                        )
+                        .await;
                         Ok(out.into_response(&call_id_owned, &payload_for_response))
                     }
-                    Err(err) => Err(err),
+                    Err(err) => {
+                        dispatch_after_tool_hook(
+                            hook_session.as_ref(),
+                            hook_turn.as_ref(),
+                            &tool_name,
+                            &call_id_owned,
+                            &tool_output_for_error(&err),
+                        )
+                        .await;
+                        Err(err)
+                    }
                 };
             }
         }
@@ -368,11 +415,62 @@ impl ToolRegistry {
                 let output = guard.take().ok_or_else(|| {
                     FunctionCallError::Fatal("tool produced no output".to_string())
                 })?;
+                dispatch_after_tool_hook(
+                    hook_session.as_ref(),
+                    hook_turn.as_ref(),
+                    &tool_name,
+                    &call_id_owned,
+                    &output,
+                )
+                .await;
                 Ok(output.into_response(&call_id_owned, &payload_for_response))
             }
-            Err(err) => Err(err),
+            Err(err) => {
+                dispatch_after_tool_hook(
+                    hook_session.as_ref(),
+                    hook_turn.as_ref(),
+                    &tool_name,
+                    &call_id_owned,
+                    &tool_output_for_error(&err),
+                )
+                .await;
+                Err(err)
+            }
         }
     }
+}
+
+fn tool_output_for_error(error: &FunctionCallError) -> ToolOutput {
+    ToolOutput::Function {
+        body: FunctionCallOutputBody::Text(error.to_string()),
+        success: Some(false),
+    }
+}
+
+async fn dispatch_after_tool_hook(
+    session: &crate::codex::Session,
+    turn: &crate::codex::TurnContext,
+    tool_name: &str,
+    call_id: &str,
+    output: &ToolOutput,
+) {
+    session
+        .hooks()
+        .dispatch(HookPayload {
+            session_id: session.conversation_id,
+            cwd: turn.cwd.clone(),
+            triggered_at: chrono::Utc::now(),
+            hook_event: HookEvent::AfterTool {
+                event: HookEventAfterTool {
+                    thread_id: session.conversation_id,
+                    turn_id: turn.sub_id.clone(),
+                    call_id: call_id.to_string(),
+                    tool_name: tool_name.to_string(),
+                    success: output.success_for_logging(),
+                },
+            },
+        })
+        .await;
 }
 
 #[derive(Debug, Clone)]

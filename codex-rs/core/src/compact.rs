@@ -192,7 +192,7 @@ async fn run_compact_task_inner(
     let summary_text = format!("{SUMMARY_PREFIX}\n{summary_suffix}");
     let user_messages = collect_user_messages(history_items);
 
-    let initial_context = sess.build_initial_context(turn_context.as_ref()).await;
+    let initial_context = sess.build_live_initial_context(turn_context.as_ref()).await;
     let mut new_history = build_compacted_history(initial_context, &user_messages, &summary_text);
     let ghost_snapshots: Vec<ResponseItem> = history_items
         .iter()
@@ -200,12 +200,12 @@ async fn run_compact_task_inner(
         .cloned()
         .collect();
     new_history.extend(ghost_snapshots);
-    sess.replace_history(new_history).await;
+    sess.replace_history(new_history.clone()).await;
     sess.recompute_token_usage(&turn_context).await;
 
     let rollout_item = RolloutItem::Compacted(CompactedItem {
         message: summary_text.clone(),
-        replacement_history: None,
+        replacement_history: Some(new_history.clone()),
     });
     sess.persist_rollout_items(&[rollout_item]).await;
 

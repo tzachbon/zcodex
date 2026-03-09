@@ -1,11 +1,11 @@
 ---
 source: tui/src/bottom_pane/chat_composer.rs
-assertion_line: 2385
+assertion_line: 4805
 expression: terminal.backend()
 ---
 "                                                            "
 "› /res                                                      "
 "                                                            "
-"                                                            "
-"                                                            "
-"  /resume  resume a saved chat                              "
+"  /resume-work     resume GSD workflow context              "
+"  /resume          resume a saved chat                      "
+"  /research-phase  run research only for a GSD phase        "

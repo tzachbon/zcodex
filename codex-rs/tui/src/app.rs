@@ -2195,9 +2195,10 @@ impl App {
             AppEvent::SubmitUserMessageWithMode {
                 text,
                 collaboration_mode,
+                cwd,
             } => {
                 self.chat_widget
-                    .submit_user_message_with_mode(text, collaboration_mode);
+                    .submit_user_message_with_mode(text, collaboration_mode, cwd);
             }
             AppEvent::ManageSkillsClosed => {
                 self.chat_widget.handle_manage_skills_closed();

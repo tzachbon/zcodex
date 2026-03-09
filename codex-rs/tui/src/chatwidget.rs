@@ -51,6 +51,7 @@ use codex_core::find_thread_name_by_id;
 use codex_core::git_info::current_branch_name;
 use codex_core::git_info::get_git_repo_root;
 use codex_core::git_info::local_git_branches;
+use codex_core::gsd::GsdWorkflowCommand;
 use codex_core::models_manager::manager::ModelsManager;
 use codex_core::project_doc::DEFAULT_PROJECT_DOC_FILENAME;
 use codex_core::protocol::AgentMessageDeltaEvent;
@@ -144,6 +145,7 @@ const PLAN_IMPLEMENTATION_TITLE: &str = "Implement this plan?";
 const PLAN_IMPLEMENTATION_YES: &str = "Yes, implement this plan";
 const PLAN_IMPLEMENTATION_NO: &str = "No, stay in Plan mode";
 const PLAN_IMPLEMENTATION_CODING_MESSAGE: &str = "Implement the plan.";
+const GSD_PROJECT_PATH: &str = ".planning/PROJECT.md";
 
 use crate::app_event::AppEvent;
 use crate::app_event::ConnectorsSnapshot;
@@ -1123,7 +1125,7 @@ impl ChatWidget {
     }
 
     fn on_plan_delta(&mut self, delta: String) {
-        if self.active_mode_kind() != ModeKind::Plan {
+        if !Self::is_plan_mode(self.active_mode_kind()) {
             return;
         }
         if !self.plan_item_active {
@@ -1256,8 +1258,11 @@ impl ChatWidget {
         self.clear_unified_exec_processes();
         self.request_redraw();
 
-        if !from_replay && self.queued_user_messages.is_empty() {
-            self.maybe_prompt_plan_implementation();
+        if !from_replay
+            && self.queued_user_messages.is_empty()
+            && self.maybe_prompt_plan_implementation()
+        {
+            return;
         }
         // Keep this flag for replayed completion events so a subsequent live TurnComplete can
         // still show the prompt once after thread switch replay.
@@ -1274,31 +1279,33 @@ impl ChatWidget {
         self.maybe_show_pending_rate_limit_prompt();
     }
 
-    fn maybe_prompt_plan_implementation(&mut self) {
+    fn maybe_prompt_plan_implementation(&mut self) -> bool {
         if !self.collaboration_modes_enabled() {
-            return;
+            return false;
         }
         if !self.queued_user_messages.is_empty() {
-            return;
+            return false;
         }
-        if self.active_mode_kind() != ModeKind::Plan {
-            return;
+        if !Self::is_plan_mode(self.active_mode_kind()) {
+            return false;
         }
         if !self.saw_plan_item_this_turn {
-            return;
+            return false;
         }
         if !self.bottom_pane.no_modal_or_popup_active() {
-            return;
+            return false;
         }
 
         if matches!(
             self.rate_limit_switch_prompt,
             RateLimitSwitchPromptState::Pending
         ) {
-            return;
+            return false;
         }
 
+        self.saw_plan_item_this_turn = false;
         self.open_plan_implementation_prompt();
+        true
     }
 
     fn open_plan_implementation_prompt(&mut self) {
@@ -1306,10 +1313,12 @@ impl ChatWidget {
         let (implement_actions, implement_disabled_reason) = match default_mask {
             Some(mask) => {
                 let user_text = PLAN_IMPLEMENTATION_CODING_MESSAGE.to_string();
+                let cwd = self.submission_cwd(None);
                 let actions: Vec<SelectionAction> = vec![Box::new(move |tx| {
                     tx.send(AppEvent::SubmitUserMessageWithMode {
                         text: user_text.clone(),
                         collaboration_mode: mask.clone(),
+                        cwd: cwd.clone(),
                     });
                 })];
                 (actions, None)
@@ -3082,7 +3091,14 @@ impl ChatWidget {
             self.request_redraw();
             return;
         }
+        if let Some(workflow) = Self::workflow_for_slash_command(cmd) {
+            self.run_gsd_workflow_command(workflow, String::new(), Vec::new(), HashMap::new());
+            return;
+        }
         match cmd {
+            SlashCommand::Plan => {
+                self.open_plan_hub();
+            }
             SlashCommand::Feedback => {
                 if !self.config.feedback_enabled {
                     let params = crate::bottom_pane::feedback_disabled_params();
@@ -3133,20 +3149,6 @@ impl ChatWidget {
             }
             SlashCommand::Personality => {
                 self.open_personality_popup();
-            }
-            SlashCommand::Plan => {
-                if !self.collaboration_modes_enabled() {
-                    self.add_info_message(
-                        "Collaboration modes are disabled.".to_string(),
-                        Some("Enable collaboration modes to use /plan.".to_string()),
-                    );
-                    return;
-                }
-                if let Some(mask) = collaboration_modes::plan_mask(self.models_manager.as_ref()) {
-                    self.set_collaboration_mask(mask);
-                } else {
-                    self.add_info_message("Plan mode unavailable right now.".to_string(), None);
-                }
             }
             SlashCommand::Collab => {
                 if !self.collaboration_modes_enabled() {
@@ -3319,6 +3321,37 @@ impl ChatWidget {
                     }),
                 }));
             }
+            SlashCommand::QuickPlan
+            | SlashCommand::NewProject
+            | SlashCommand::NewMilestone
+            | SlashCommand::MapCodebase
+            | SlashCommand::DiscussPhase
+            | SlashCommand::PlanPhase
+            | SlashCommand::ExecutePhase
+            | SlashCommand::VerifyWork
+            | SlashCommand::Quick
+            | SlashCommand::Progress
+            | SlashCommand::ResumeWork
+            | SlashCommand::PauseWork
+            | SlashCommand::WorkflowSettings
+            | SlashCommand::WorkflowProfile
+            | SlashCommand::WorkflowHelp
+            | SlashCommand::AddPhase
+            | SlashCommand::InsertPhase
+            | SlashCommand::RemovePhase
+            | SlashCommand::PhaseAssumptions
+            | SlashCommand::PlanMilestoneGaps
+            | SlashCommand::ResearchPhase
+            | SlashCommand::ValidatePhase
+            | SlashCommand::WorkflowUpdate
+            | SlashCommand::WorkflowHealth
+            | SlashCommand::DebugWorkflow
+            | SlashCommand::CleanupWorkflow
+            | SlashCommand::AddTodo
+            | SlashCommand::Todos
+            | SlashCommand::AuditMilestone
+            | SlashCommand::CompleteMilestone
+            | SlashCommand::ReapplyPatches => unreachable!("workflow commands should return early"),
         }
     }
 
@@ -3344,6 +3377,24 @@ impl ChatWidget {
 
         let trimmed = args.trim();
         match cmd {
+            _ if Self::workflow_for_slash_command(cmd).is_some() => {
+                let Some((prepared_args, prepared_elements)) =
+                    self.bottom_pane.prepare_inline_args_submission(false)
+                else {
+                    return;
+                };
+                let mention_paths = self.bottom_pane.take_mention_paths();
+                let Some(workflow) = Self::workflow_for_slash_command(cmd) else {
+                    return;
+                };
+                self.run_gsd_workflow_command(
+                    workflow,
+                    prepared_args,
+                    prepared_elements,
+                    mention_paths,
+                );
+                self.bottom_pane.drain_pending_submission_state();
+            }
             SlashCommand::Rename if !trimmed.is_empty() => {
                 self.otel_manager.counter("codex.thread.rename", 1, &[]);
                 let Some((prepared_args, _prepared_elements)) =
@@ -3361,33 +3412,6 @@ impl ChatWidget {
                 self.app_event_tx
                     .send(AppEvent::CodexOp(Op::SetThreadName { name }));
                 self.bottom_pane.drain_pending_submission_state();
-            }
-            SlashCommand::Plan if !trimmed.is_empty() => {
-                self.dispatch_command(cmd);
-                if self.active_mode_kind() != ModeKind::Plan {
-                    return;
-                }
-                let Some((prepared_args, prepared_elements)) =
-                    self.bottom_pane.prepare_inline_args_submission(true)
-                else {
-                    return;
-                };
-                let user_message = UserMessage {
-                    text: prepared_args,
-                    local_images: self
-                        .bottom_pane
-                        .take_recent_submission_images_with_placeholders(),
-                    text_elements: prepared_elements,
-                    mention_paths: self.bottom_pane.take_mention_paths(),
-                };
-                if self.is_session_configured() {
-                    self.reasoning_buffer.clear();
-                    self.full_reasoning_buffer.clear();
-                    self.set_status_header(String::from("Working"));
-                    self.submit_user_message(user_message);
-                } else {
-                    self.queue_user_message(user_message);
-                }
             }
             SlashCommand::Review if !trimmed.is_empty() => {
                 let Some((prepared_args, _prepared_elements)) =
@@ -3407,6 +3431,215 @@ impl ChatWidget {
             }
             _ => self.dispatch_command(cmd),
         }
+    }
+
+    fn workflow_for_slash_command(cmd: SlashCommand) -> Option<GsdWorkflowCommand> {
+        match cmd {
+            SlashCommand::QuickPlan => Some(GsdWorkflowCommand::QuickPlan),
+            SlashCommand::NewProject => Some(GsdWorkflowCommand::NewProject),
+            SlashCommand::NewMilestone => Some(GsdWorkflowCommand::NewMilestone),
+            SlashCommand::MapCodebase => Some(GsdWorkflowCommand::MapCodebase),
+            SlashCommand::DiscussPhase => Some(GsdWorkflowCommand::DiscussPhase),
+            SlashCommand::PlanPhase => Some(GsdWorkflowCommand::PlanPhase),
+            SlashCommand::ExecutePhase => Some(GsdWorkflowCommand::ExecutePhase),
+            SlashCommand::VerifyWork => Some(GsdWorkflowCommand::VerifyWork),
+            SlashCommand::Quick => Some(GsdWorkflowCommand::Quick),
+            SlashCommand::Progress => Some(GsdWorkflowCommand::Progress),
+            SlashCommand::ResumeWork => Some(GsdWorkflowCommand::ResumeWork),
+            SlashCommand::PauseWork => Some(GsdWorkflowCommand::PauseWork),
+            SlashCommand::WorkflowSettings => Some(GsdWorkflowCommand::WorkflowSettings),
+            SlashCommand::WorkflowProfile => Some(GsdWorkflowCommand::WorkflowProfile),
+            SlashCommand::WorkflowHelp => Some(GsdWorkflowCommand::WorkflowHelp),
+            SlashCommand::AddPhase => Some(GsdWorkflowCommand::AddPhase),
+            SlashCommand::InsertPhase => Some(GsdWorkflowCommand::InsertPhase),
+            SlashCommand::RemovePhase => Some(GsdWorkflowCommand::RemovePhase),
+            SlashCommand::PhaseAssumptions => Some(GsdWorkflowCommand::PhaseAssumptions),
+            SlashCommand::PlanMilestoneGaps => Some(GsdWorkflowCommand::PlanMilestoneGaps),
+            SlashCommand::ResearchPhase => Some(GsdWorkflowCommand::ResearchPhase),
+            SlashCommand::ValidatePhase => Some(GsdWorkflowCommand::ValidatePhase),
+            SlashCommand::WorkflowUpdate => Some(GsdWorkflowCommand::WorkflowUpdate),
+            SlashCommand::WorkflowHealth => Some(GsdWorkflowCommand::WorkflowHealth),
+            SlashCommand::DebugWorkflow => Some(GsdWorkflowCommand::DebugWorkflow),
+            SlashCommand::CleanupWorkflow => Some(GsdWorkflowCommand::CleanupWorkflow),
+            SlashCommand::AddTodo => Some(GsdWorkflowCommand::AddTodo),
+            SlashCommand::Todos => Some(GsdWorkflowCommand::Todos),
+            SlashCommand::AuditMilestone => Some(GsdWorkflowCommand::AuditMilestone),
+            SlashCommand::CompleteMilestone => Some(GsdWorkflowCommand::CompleteMilestone),
+            SlashCommand::ReapplyPatches => Some(GsdWorkflowCommand::ReapplyPatches),
+            SlashCommand::Plan
+            | SlashCommand::Feedback
+            | SlashCommand::Model
+            | SlashCommand::Approvals
+            | SlashCommand::Permissions
+            | SlashCommand::ElevateSandbox
+            | SlashCommand::Experimental
+            | SlashCommand::Skills
+            | SlashCommand::Review
+            | SlashCommand::Rename
+            | SlashCommand::New
+            | SlashCommand::Resume
+            | SlashCommand::Fork
+            | SlashCommand::Init
+            | SlashCommand::Compact
+            | SlashCommand::Collab
+            | SlashCommand::Agent
+            | SlashCommand::Diff
+            | SlashCommand::Mention
+            | SlashCommand::Status
+            | SlashCommand::DebugConfig
+            | SlashCommand::Statusline
+            | SlashCommand::Mcp
+            | SlashCommand::Apps
+            | SlashCommand::Logout
+            | SlashCommand::Quit
+            | SlashCommand::Exit
+            | SlashCommand::Rollout
+            | SlashCommand::Ps
+            | SlashCommand::Personality
+            | SlashCommand::TestApproval => None,
+        }
+    }
+
+    fn collaboration_mask_for_kind(&self, kind: ModeKind) -> Option<CollaborationModeMask> {
+        collaboration_modes::mask_for_kind(self.models_manager.as_ref(), kind).or_else(|| {
+            collaboration_modes::hidden_mask_for_kind(self.models_manager.as_ref(), kind)
+        })
+    }
+
+    fn run_gsd_workflow_command(
+        &mut self,
+        workflow: GsdWorkflowCommand,
+        args: String,
+        text_elements: Vec<TextElement>,
+        mention_paths: HashMap<String, String>,
+    ) {
+        if let Some(mode) = workflow.preferred_mode() {
+            if !self.collaboration_modes_enabled() {
+                self.add_info_message(
+                    "Collaboration modes are disabled.".to_string(),
+                    Some(
+                        "Enable collaboration modes to run native GSD planning commands."
+                            .to_string(),
+                    ),
+                );
+                return;
+            }
+            if let Some(mask) = self.collaboration_mask_for_kind(mode) {
+                self.set_collaboration_mask(mask);
+            }
+        }
+        let rendered =
+            codex_core::gsd::render_workflow_prompt_with_elements(workflow, &args, &text_elements);
+        self.submit_user_message(UserMessage {
+            text: rendered.text,
+            local_images: Vec::new(),
+            text_elements: rendered.text_elements,
+            mention_paths,
+        });
+    }
+
+    fn has_gsd_project_state(&self) -> bool {
+        self.current_cwd
+            .as_ref()
+            .filter(|cwd| !cwd.as_os_str().is_empty())
+            .unwrap_or(&self.config.cwd)
+            .join(GSD_PROJECT_PATH)
+            .exists()
+    }
+
+    fn submission_cwd(&self, cwd_override: Option<&PathBuf>) -> PathBuf {
+        cwd_override
+            .filter(|cwd| !cwd.as_os_str().is_empty())
+            .cloned()
+            .or_else(|| {
+                self.current_cwd
+                    .as_ref()
+                    .filter(|cwd| !cwd.as_os_str().is_empty())
+                    .cloned()
+            })
+            .unwrap_or_else(|| self.config.cwd.clone())
+    }
+
+    fn open_plan_hub(&mut self) {
+        if !self.collaboration_modes_enabled() {
+            self.add_info_message(
+                "Collaboration modes are disabled.".to_string(),
+                Some("Enable collaboration modes to use /plan.".to_string()),
+            );
+            return;
+        }
+
+        let Some(project_mask) = collaboration_modes::plan_mask(self.models_manager.as_ref())
+        else {
+            self.add_info_message("Plan mode unavailable right now.".to_string(), None);
+            return;
+        };
+        let Some(conversation_mask) = self.collaboration_mask_for_kind(ModeKind::ConversationPlan)
+        else {
+            self.add_info_message(
+                "Conversation planning unavailable right now.".to_string(),
+                None,
+            );
+            return;
+        };
+
+        let has_state = self.has_gsd_project_state();
+        let project_workflow = if has_state {
+            GsdWorkflowCommand::Progress
+        } else {
+            GsdWorkflowCommand::NewProject
+        };
+        let project_prompt = codex_core::gsd::render_workflow_prompt(project_workflow, "");
+        let project_mask_for_action = project_mask;
+        let conversation_mask_for_action = conversation_mask;
+        let project_cwd = self.submission_cwd(None);
+
+        let items = vec![
+            SelectionItem {
+                name: "Project planning".to_string(),
+                description: Some(if has_state {
+                    "Resume GSD planning from the existing `.planning/` state.".to_string()
+                } else {
+                    "Start a fresh GSD project planning flow in `.planning/`.".to_string()
+                }),
+                is_default: true,
+                actions: vec![Box::new(move |tx| {
+                    tx.send(AppEvent::SubmitUserMessageWithMode {
+                        text: project_prompt.clone(),
+                        collaboration_mode: project_mask_for_action.clone(),
+                        cwd: project_cwd.clone(),
+                    });
+                })],
+                dismiss_on_select: true,
+                ..Default::default()
+            },
+            SelectionItem {
+                name: "Conversation planning".to_string(),
+                description: Some(
+                    "Stay in a chat-first planning mode without forcing `.planning/` workflow state."
+                        .to_string(),
+                ),
+                actions: vec![Box::new(move |tx| {
+                    tx.send(AppEvent::UpdateCollaborationMode(
+                        conversation_mask_for_action.clone(),
+                    ));
+                })],
+                dismiss_on_select: true,
+                ..Default::default()
+            },
+        ];
+
+        self.show_selection_view(SelectionViewParams {
+            title: Some("Planning Hub".to_string()),
+            subtitle: Some("Choose how `/plan` should behave for this session.".to_string()),
+            footer_hint: Some(standard_popup_hint_line()),
+            items,
+            ..Default::default()
+        });
+    }
+
+    fn is_plan_mode(kind: ModeKind) -> bool {
+        matches!(kind, ModeKind::Plan | ModeKind::ConversationPlan)
     }
 
     fn show_rename_prompt(&mut self) {
@@ -3503,7 +3736,11 @@ impl ChatWidget {
         }
     }
 
-    fn submit_user_message(&mut self, user_message: UserMessage) {
+    fn submit_user_message_impl(
+        &mut self,
+        user_message: UserMessage,
+        cwd_override: Option<PathBuf>,
+    ) {
         if !self.is_session_configured() {
             tracing::warn!("cannot submit user message before session is configured; queueing");
             self.queued_user_messages.push_front(user_message);
@@ -3601,7 +3838,7 @@ impl ChatWidget {
             .filter(|_| self.current_model_supports_personality());
         let op = Op::UserTurn {
             items,
-            cwd: self.config.cwd.clone(),
+            cwd: self.submission_cwd(cwd_override.as_ref()),
             approval_policy: self.config.approval_policy.value(),
             sandbox_policy: self.config.sandbox_policy.get().clone(),
             model: effective_mode.model().to_string(),
@@ -3638,6 +3875,10 @@ impl ChatWidget {
         }
 
         self.needs_final_message_separator = false;
+    }
+
+    fn submit_user_message(&mut self, user_message: UserMessage) {
+        self.submit_user_message_impl(user_message, None);
     }
 
     /// Restore the blocked submission draft without losing mention resolution state.
@@ -6019,7 +6260,7 @@ impl ChatWidget {
             return None;
         }
         match self.active_mode_kind() {
-            ModeKind::Plan => Some(CollaborationModeIndicator::Plan),
+            ModeKind::Plan | ModeKind::ConversationPlan => Some(CollaborationModeIndicator::Plan),
             ModeKind::Default | ModeKind::PairProgramming | ModeKind::Execute => None,
         }
     }
@@ -6429,9 +6670,10 @@ impl ChatWidget {
         &mut self,
         text: String,
         collaboration_mode: CollaborationModeMask,
+        cwd: PathBuf,
     ) {
         self.set_collaboration_mask(collaboration_mode);
-        self.submit_user_message(text.into());
+        self.submit_user_message_impl(text.into(), Some(cwd));
     }
 
     /// True when the UI is in the regular composer state with no running task,

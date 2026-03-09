@@ -24,6 +24,19 @@ use serde::de::Error as SerdeError;
 
 pub const DEFAULT_OTEL_ENVIRONMENT: &str = "dev";
 
+#[derive(Serialize, Deserialize, Debug, Clone, Default, PartialEq, Eq, JsonSchema)]
+#[schemars(deny_unknown_fields)]
+pub struct HooksConfig {
+    #[serde(default)]
+    pub after_agent: Vec<Vec<String>>,
+    #[serde(default)]
+    pub after_tool: Vec<Vec<String>>,
+    #[serde(default)]
+    pub session_start: Vec<Vec<String>>,
+    #[serde(default)]
+    pub session_resume: Vec<Vec<String>>,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum McpServerDisabledReason {
     Unknown,

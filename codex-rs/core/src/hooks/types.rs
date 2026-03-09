@@ -50,6 +50,22 @@ pub(crate) struct HookEventAfterAgent {
     pub last_assistant_message: Option<String>,
 }
 
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub(crate) struct HookEventAfterTool {
+    pub thread_id: ThreadId,
+    pub turn_id: String,
+    pub call_id: String,
+    pub tool_name: String,
+    pub success: bool,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub(crate) struct HookEventSessionLifecycle {
+    pub thread_id: ThreadId,
+}
+
 fn serialize_triggered_at<S>(value: &DateTime<Utc>, serializer: S) -> Result<S::Ok, S::Error>
 where
     S: Serializer,
@@ -63,6 +79,18 @@ pub(crate) enum HookEvent {
     AfterAgent {
         #[serde(flatten)]
         event: HookEventAfterAgent,
+    },
+    AfterTool {
+        #[serde(flatten)]
+        event: HookEventAfterTool,
+    },
+    SessionStart {
+        #[serde(flatten)]
+        event: HookEventSessionLifecycle,
+    },
+    SessionResume {
+        #[serde(flatten)]
+        event: HookEventSessionLifecycle,
     },
 }
 
@@ -85,6 +113,8 @@ mod tests {
 
     use super::HookEvent;
     use super::HookEventAfterAgent;
+    use super::HookEventAfterTool;
+    use super::HookEventSessionLifecycle;
     use super::HookPayload;
 
     #[test]
@@ -119,6 +149,106 @@ mod tests {
                 "turn_id": "turn-1",
                 "input_messages": ["hello"],
                 "last_assistant_message": "hi",
+            },
+        });
+
+        assert_eq!(actual, expected);
+    }
+
+    #[test]
+    fn hook_payload_supports_after_tool_events() {
+        let session_id = ThreadId::new();
+        let thread_id = ThreadId::new();
+        let payload = HookPayload {
+            session_id,
+            cwd: PathBuf::from("tmp"),
+            triggered_at: Utc
+                .with_ymd_and_hms(2025, 1, 1, 0, 0, 0)
+                .single()
+                .expect("valid timestamp"),
+            hook_event: HookEvent::AfterTool {
+                event: HookEventAfterTool {
+                    thread_id,
+                    turn_id: "turn-2".to_string(),
+                    call_id: "call-1".to_string(),
+                    tool_name: "shell".to_string(),
+                    success: true,
+                },
+            },
+        };
+
+        let actual = serde_json::to_value(payload).expect("serialize hook payload");
+        let expected = json!({
+            "session_id": session_id.to_string(),
+            "cwd": "tmp",
+            "triggered_at": "2025-01-01T00:00:00Z",
+            "hook_event": {
+                "event_type": "after_tool",
+                "thread_id": thread_id.to_string(),
+                "turn_id": "turn-2",
+                "call_id": "call-1",
+                "tool_name": "shell",
+                "success": true,
+            },
+        });
+
+        assert_eq!(actual, expected);
+    }
+
+    #[test]
+    fn hook_payload_supports_session_lifecycle_events() {
+        let session_id = ThreadId::new();
+        let thread_id = ThreadId::new();
+        let payload = HookPayload {
+            session_id,
+            cwd: PathBuf::from("tmp"),
+            triggered_at: Utc
+                .with_ymd_and_hms(2025, 1, 1, 0, 0, 0)
+                .single()
+                .expect("valid timestamp"),
+            hook_event: HookEvent::SessionStart {
+                event: HookEventSessionLifecycle { thread_id },
+            },
+        };
+
+        let actual = serde_json::to_value(payload).expect("serialize hook payload");
+        let expected = json!({
+            "session_id": session_id.to_string(),
+            "cwd": "tmp",
+            "triggered_at": "2025-01-01T00:00:00Z",
+            "hook_event": {
+                "event_type": "session_start",
+                "thread_id": thread_id.to_string(),
+            },
+        });
+
+        assert_eq!(actual, expected);
+    }
+
+    #[test]
+    fn hook_payload_supports_session_resume_events() {
+        let session_id = ThreadId::new();
+        let thread_id = ThreadId::new();
+        let payload = HookPayload {
+            session_id,
+            cwd: PathBuf::from("tmp"),
+            triggered_at: Utc
+                .with_ymd_and_hms(2025, 1, 1, 0, 0, 0)
+                .single()
+                .expect("valid timestamp"),
+            hook_event: HookEvent::SessionResume {
+                event: HookEventSessionLifecycle { thread_id },
+            },
+        };
+
+        let actual = serde_json::to_value(payload).expect("serialize hook payload");
+        let expected = json!({
+            "session_id": session_id.to_string(),
+            "cwd": "tmp",
+            "triggered_at": "2025-01-01T00:00:00Z",
+            "hook_event": {
+                "event_type": "session_resume",
+                "thread_id": thread_id.to_string(),
             },
         });
 

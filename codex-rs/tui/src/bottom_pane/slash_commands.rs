@@ -20,7 +20,8 @@ pub(crate) fn builtins_for_input(
         .filter(|(_, cmd)| allow_elevate_sandbox || *cmd != SlashCommand::ElevateSandbox)
         .filter(|(_, cmd)| {
             collaboration_modes_enabled
-                || !matches!(*cmd, SlashCommand::Collab | SlashCommand::Plan)
+                || (!cmd.is_gsd_workflow()
+                    && !matches!(*cmd, SlashCommand::Collab | SlashCommand::Plan))
         })
         .filter(|(_, cmd)| connectors_enabled || *cmd != SlashCommand::Apps)
         .filter(|(_, cmd)| personality_command_enabled || *cmd != SlashCommand::Personality)
@@ -42,7 +43,7 @@ pub(crate) fn find_builtin_command(
         allow_elevate_sandbox,
     )
     .into_iter()
-    .find(|(command_name, _)| *command_name == name)
+    .find(|(command_name, cmd)| *command_name == name || cmd.aliases().contains(&name))
     .map(|(_, cmd)| cmd)
 }
 
@@ -61,5 +62,78 @@ pub(crate) fn has_builtin_prefix(
         allow_elevate_sandbox,
     )
     .into_iter()
-    .any(|(command_name, _)| fuzzy_match(command_name, name).is_some())
+    .any(|(command_name, cmd)| {
+        fuzzy_match(command_name, name).is_some()
+            || cmd
+                .aliases()
+                .iter()
+                .any(|alias| fuzzy_match(alias, name).is_some())
+    })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::slash_command::SlashCommand;
+
+    #[test]
+    fn alias_lookup_resolves_hidden_gsd_commands() {
+        assert_eq!(
+            find_builtin_command("gsd:new-project", true, true, true, true),
+            Some(SlashCommand::NewProject)
+        );
+        assert_eq!(
+            find_builtin_command("gsd:plan-phase", true, true, true, true),
+            Some(SlashCommand::PlanPhase)
+        );
+        assert_eq!(
+            find_builtin_command("gsd:check-todos", true, true, true, true),
+            Some(SlashCommand::Todos)
+        );
+    }
+
+    #[test]
+    fn builtin_prefix_matches_aliases() {
+        assert!(has_builtin_prefix("gsd:new-proj", true, true, true, true));
+        assert!(has_builtin_prefix("gsd:plan-ph", true, true, true, true));
+    }
+
+    #[test]
+    fn builtins_list_shows_native_names_only() {
+        let names: Vec<&str> = builtins_for_input(true, true, true, true)
+            .into_iter()
+            .map(|(name, _)| name)
+            .collect();
+        assert!(names.contains(&"new-project"));
+        assert!(names.contains(&"quick-plan"));
+        assert!(!names.contains(&"gsd:new-project"));
+    }
+
+    #[test]
+    fn gsd_commands_are_hidden_when_collaboration_modes_disabled() {
+        let names: Vec<&str> = builtins_for_input(false, true, true, true)
+            .into_iter()
+            .map(|(name, _)| name)
+            .collect();
+        assert!(!names.contains(&"new-project"));
+        assert!(!names.contains(&"progress"));
+        assert!(!names.contains(&"workflow-help"));
+        assert!(!names.contains(&"plan"));
+    }
+
+    #[test]
+    fn gsd_alias_lookup_is_disabled_without_collaboration_modes() {
+        assert_eq!(
+            find_builtin_command("new-project", false, true, true, true),
+            None
+        );
+        assert_eq!(
+            find_builtin_command("gsd:new-project", false, true, true, true),
+            None
+        );
+        assert_eq!(
+            find_builtin_command("progress", false, true, true, true),
+            None
+        );
+    }
 }

@@ -1,4 +1,10 @@
+use std::process::Stdio;
+use std::sync::Arc;
+use std::time::Duration;
+
+use tokio::io::AsyncWriteExt;
 use tokio::process::Command;
+use tokio::time::timeout;
 
 use super::types::Hook;
 use super::types::HookEvent;
@@ -7,9 +13,14 @@ use super::types::HookPayload;
 use super::user_notification::notify_hook;
 use crate::config::Config;
 
+const HOOK_COMMAND_TIMEOUT: Duration = Duration::from_secs(10);
+
 #[derive(Default, Clone)]
 pub(crate) struct Hooks {
     after_agent: Vec<Hook>,
+    after_tool: Vec<Hook>,
+    session_start: Vec<Hook>,
+    session_resume: Vec<Hook>,
 }
 
 fn get_notify_hook(config: &Config) -> Option<Hook> {
@@ -20,6 +31,45 @@ fn get_notify_hook(config: &Config) -> Option<Hook> {
         .map(|argv| notify_hook(argv.clone()))
 }
 
+fn command_hook(argv: Vec<String>) -> Hook {
+    Hook {
+        func: Arc::new(move |payload: &HookPayload| {
+            let argv = argv.clone();
+            Box::pin(async move {
+                let json = match serde_json::to_string(payload) {
+                    Ok(json) => json,
+                    Err(_) => return HookOutcome::Continue,
+                };
+                let Some(mut command) = command_from_argv(&argv) else {
+                    return HookOutcome::Continue;
+                };
+                command
+                    .current_dir(&payload.cwd)
+                    .stdin(Stdio::piped())
+                    .stdout(Stdio::null())
+                    .stderr(Stdio::null());
+
+                let Ok(mut child) = command.spawn() else {
+                    return HookOutcome::Continue;
+                };
+                let run_result = timeout(HOOK_COMMAND_TIMEOUT, async {
+                    if let Some(mut stdin) = child.stdin.take() {
+                        let _ = stdin.write_all(json.as_bytes()).await;
+                        let _ = stdin.shutdown().await;
+                    }
+                    let _ = child.wait().await;
+                })
+                .await;
+                if run_result.is_err() {
+                    let _ = child.kill().await;
+                    let _ = child.wait().await;
+                }
+                HookOutcome::Continue
+            })
+        }),
+    }
+}
+
 // Hooks are arbitrary, user-specified functions that are deterministically
 // executed after specific events in the Codex lifecycle.
 impl Hooks {
@@ -27,13 +77,53 @@ impl Hooks {
     // For legacy compatibility, if config.notify is set, it will be added to
     // the after_agent hooks.
     pub(crate) fn new(config: &Config) -> Self {
-        let after_agent = get_notify_hook(config).into_iter().collect();
-        Self { after_agent }
+        let mut after_agent: Vec<Hook> = config
+            .hooks
+            .after_agent
+            .iter()
+            .filter(|argv| argv.first().is_some_and(|program| !program.is_empty()))
+            .cloned()
+            .map(command_hook)
+            .collect();
+        after_agent.extend(get_notify_hook(config));
+        let after_tool: Vec<Hook> = config
+            .hooks
+            .after_tool
+            .iter()
+            .filter(|argv| argv.first().is_some_and(|program| !program.is_empty()))
+            .cloned()
+            .map(command_hook)
+            .collect();
+        let session_start: Vec<Hook> = config
+            .hooks
+            .session_start
+            .iter()
+            .filter(|argv| argv.first().is_some_and(|program| !program.is_empty()))
+            .cloned()
+            .map(command_hook)
+            .collect();
+        let session_resume: Vec<Hook> = config
+            .hooks
+            .session_resume
+            .iter()
+            .filter(|argv| argv.first().is_some_and(|program| !program.is_empty()))
+            .cloned()
+            .map(command_hook)
+            .collect();
+        Self {
+            after_agent,
+            after_tool,
+            session_start,
+            session_resume,
+        }
     }
 
     fn hooks_for_event(&self, hook_event: &HookEvent) -> &[Hook] {
         match hook_event {
             HookEvent::AfterAgent { .. } => &self.after_agent,
+            HookEvent::AfterTool { .. } => &self.after_tool,
+            HookEvent::SessionStart { .. } => &self.session_start,
+            HookEvent::SessionResume { .. } => &self.session_resume,
         }
     }
 
@@ -82,6 +172,8 @@ mod tests {
     use super::super::types::Hook;
     use super::super::types::HookEvent;
     use super::super::types::HookEventAfterAgent;
+    use super::super::types::HookEventAfterTool;
+    use super::super::types::HookEventSessionLifecycle;
     use super::super::types::HookOutcome;
     use super::super::types::HookPayload;
     use super::Hooks;
@@ -110,6 +202,18 @@ mod tests {
         }
     }
 
+    fn payload_for_event(hook_event: HookEvent) -> HookPayload {
+        HookPayload {
+            session_id: ThreadId::new(),
+            cwd: PathBuf::from(CWD),
+            triggered_at: Utc
+                .with_ymd_and_hms(2025, 1, 1, 0, 0, 0)
+                .single()
+                .expect("valid timestamp"),
+            hook_event,
+        }
+    }
+
     fn counting_hook(calls: &Arc<AtomicUsize>, outcome: HookOutcome) -> Hook {
         let calls = Arc::clone(calls);
         Hook {
@@ -124,7 +228,12 @@ mod tests {
     }
 
     fn hooks_for_after_agent(hooks: Vec<Hook>) -> Hooks {
-        Hooks { after_agent: hooks }
+        Hooks {
+            after_agent: hooks,
+            after_tool: Vec::new(),
+            session_start: Vec::new(),
+            session_resume: Vec::new(),
+        }
     }
 
     #[test]
@@ -207,6 +316,115 @@ mod tests {
         assert_eq!(calls.load(Ordering::SeqCst), 1);
     }
 
+    #[tokio::test]
+    async fn dispatch_routes_after_tool_hooks() {
+        let calls = Arc::new(AtomicUsize::new(0));
+        let hooks = Hooks {
+            after_agent: Vec::new(),
+            after_tool: vec![counting_hook(&calls, HookOutcome::Continue)],
+            session_start: Vec::new(),
+            session_resume: Vec::new(),
+        };
+
+        hooks
+            .dispatch(payload_for_event(HookEvent::AfterTool {
+                event: HookEventAfterTool {
+                    thread_id: ThreadId::new(),
+                    turn_id: "turn-tool".to_string(),
+                    call_id: "call-1".to_string(),
+                    tool_name: "shell".to_string(),
+                    success: true,
+                },
+            }))
+            .await;
+
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
+    }
+
+    #[tokio::test]
+    async fn dispatch_routes_session_start_hooks() {
+        let calls = Arc::new(AtomicUsize::new(0));
+        let hooks = Hooks {
+            after_agent: Vec::new(),
+            after_tool: Vec::new(),
+            session_start: vec![counting_hook(&calls, HookOutcome::Continue)],
+            session_resume: Vec::new(),
+        };
+
+        hooks
+            .dispatch(payload_for_event(HookEvent::SessionStart {
+                event: HookEventSessionLifecycle {
+                    thread_id: ThreadId::new(),
+                },
+            }))
+            .await;
+
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
+    }
+
+    #[tokio::test]
+    async fn dispatch_routes_session_resume_hooks() {
+        let calls = Arc::new(AtomicUsize::new(0));
+        let hooks = Hooks {
+            after_agent: Vec::new(),
+            after_tool: Vec::new(),
+            session_start: Vec::new(),
+            session_resume: vec![counting_hook(&calls, HookOutcome::Continue)],
+        };
+
+        hooks
+            .dispatch(payload_for_event(HookEvent::SessionResume {
+                event: HookEventSessionLifecycle {
+                    thread_id: ThreadId::new(),
+                },
+            }))
+            .await;
+
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
+    }
+
+    #[test]
+    fn hooks_new_loads_all_configured_command_groups() {
+        let mut config = test_config();
+        config.hooks.after_agent = vec![
+            vec!["echo".to_string(), "agent".to_string()],
+            vec!["".to_string()],
+        ];
+        config.hooks.after_tool = vec![
+            vec!["echo".to_string(), "tool".to_string()],
+            vec!["".to_string()],
+        ];
+        config.hooks.session_start = vec![
+            vec!["echo".to_string(), "start".to_string()],
+            vec!["".to_string()],
+        ];
+        config.hooks.session_resume = vec![
+            vec!["echo".to_string(), "resume".to_string()],
+            vec!["".to_string()],
+        ];
+
+        let hooks = Hooks::new(&config);
+
+        assert_eq!(hooks.after_agent.len(), 1);
+        assert_eq!(hooks.after_tool.len(), 1);
+        assert_eq!(hooks.session_start.len(), 1);
+        assert_eq!(hooks.session_resume.len(), 1);
+    }
+
+    #[test]
+    fn hooks_new_keeps_legacy_notify_on_after_agent() {
+        let mut config = test_config();
+        config.hooks.after_agent = vec![vec!["".to_string()]];
+        config.notify = Some(vec!["notify-send".to_string()]);
+
+        let hooks = Hooks::new(&config);
+
+        assert_eq!(hooks.after_agent.len(), 1);
+        assert!(hooks.after_tool.is_empty());
+        assert!(hooks.session_start.is_empty());
+        assert!(hooks.session_resume.is_empty());
+    }
+
     #[cfg(not(windows))]
     #[tokio::test]
     async fn hook_executes_program_with_payload_argument_unix() -> Result<()> {
@@ -252,6 +470,47 @@ mod tests {
         .await?;
 
         assert_eq!(contents, expected);
+        Ok(())
+    }
+
+    #[cfg(not(windows))]
+    #[tokio::test]
+    async fn command_hook_runs_in_payload_cwd() -> Result<()> {
+        let temp_dir = tempdir()?;
+        let hook = super::command_hook(vec![
+            "/bin/sh".to_string(),
+            "-c".to_string(),
+            "cat > hook-output.json".to_string(),
+        ]);
+        let payload = HookPayload {
+            session_id: ThreadId::new(),
+            cwd: temp_dir.path().to_path_buf(),
+            triggered_at: Utc
+                .with_ymd_and_hms(2025, 1, 1, 0, 0, 0)
+                .single()
+                .expect("valid timestamp"),
+            hook_event: HookEvent::SessionStart {
+                event: HookEventSessionLifecycle {
+                    thread_id: ThreadId::new(),
+                },
+            },
+        };
+
+        hook.execute(&payload).await;
+
+        let contents = timeout(Duration::from_secs(2), async {
+            loop {
+                let path = temp_dir.path().join("hook-output.json");
+                if let Ok(contents) = fs::read_to_string(&path) {
+                    break contents;
+                }
+                tokio::time::sleep(Duration::from_millis(20)).await;
+            }
+        })
+        .await
+        .expect("hook output file");
+
+        assert!(contents.contains("\"event_type\":\"session_start\""));
         Ok(())
     }
 
