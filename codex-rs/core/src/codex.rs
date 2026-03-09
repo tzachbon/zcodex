@@ -1088,6 +1088,10 @@ impl Session {
                 history_log_id,
                 history_entry_count,
                 initial_messages,
+                active_loop_state: match &initial_history {
+                    InitialHistory::Resumed(resumed) => resumed.active_loop_state.clone(),
+                    InitialHistory::New | InitialHistory::Forked(_) => None,
+                },
                 rollout_path,
             }),
         })
@@ -2707,6 +2711,9 @@ async fn submission_loop(sess: Arc<Session>, config: Arc<Config>, rx_sub: Receiv
                 )
                 .await;
             }
+            Op::PersistLoopEvent { event } => {
+                handlers::persist_loop_event(&sess, event).await;
+            }
             Op::Undo => {
                 handlers::undo(&sess, sub.id.clone()).await;
             }
@@ -2778,12 +2785,14 @@ mod handlers {
     use codex_protocol::protocol::ListCustomPromptsResponseEvent;
     use codex_protocol::protocol::ListRemoteSkillsResponseEvent;
     use codex_protocol::protocol::ListSkillsResponseEvent;
+    use codex_protocol::protocol::LoopEventItem;
     use codex_protocol::protocol::McpServerRefreshConfig;
     use codex_protocol::protocol::Op;
     use codex_protocol::protocol::RemoteSkillDownloadedEvent;
     use codex_protocol::protocol::RemoteSkillSummary;
     use codex_protocol::protocol::ReviewDecision;
     use codex_protocol::protocol::ReviewRequest;
+    use codex_protocol::protocol::RolloutItem;
     use codex_protocol::protocol::SkillsListEntry;
     use codex_protocol::protocol::ThreadNameUpdatedEvent;
     use codex_protocol::protocol::ThreadRolledBackEvent;
@@ -3356,6 +3365,12 @@ mod handlers {
             }),
         })
         .await;
+    }
+
+    pub async fn persist_loop_event(sess: &Arc<Session>, event: LoopEventItem) {
+        sess.persist_rollout_items(&[RolloutItem::LoopEvent(event)])
+            .await;
+        sess.flush_rollout().await;
     }
 
     pub async fn shutdown(sess: &Arc<Session>, sub_id: String) -> bool {
@@ -5048,6 +5063,7 @@ mod tests {
                 conversation_id: ThreadId::default(),
                 history: rollout_items,
                 rollout_path: PathBuf::from("/tmp/resume.jsonl"),
+                active_loop_state: None,
             }))
             .await;
 
@@ -5065,6 +5081,7 @@ mod tests {
                 conversation_id: ThreadId::default(),
                 history: rollout_items,
                 rollout_path: PathBuf::from("/tmp/resume.jsonl"),
+                active_loop_state: None,
             }))
             .await;
 
@@ -5151,6 +5168,7 @@ mod tests {
                 conversation_id: ThreadId::default(),
                 history: rollout_items,
                 rollout_path: PathBuf::from("/tmp/resume.jsonl"),
+                active_loop_state: None,
             }))
             .await;
 

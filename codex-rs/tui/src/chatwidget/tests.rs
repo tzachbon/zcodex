@@ -1006,6 +1006,7 @@ fn configure_session(chat: &mut ChatWidget) {
         history_log_id: 0,
         history_entry_count: 0,
         initial_messages: None,
+        active_loop_state: None,
         rollout_path: None,
     };
     chat.handle_codex_event(Event {

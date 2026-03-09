@@ -86,6 +86,7 @@ pub(crate) enum CollaborationModeIndicator {
 pub(crate) enum LoopIndicatorStatus {
     Pending,
     Running,
+    Paused,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -145,6 +146,13 @@ impl LoopIndicatorState {
                     "Loop".to_string()
                 } else {
                     format!("Loop {}/{}", self.iteration, self.max_iterations)
+                }
+            }
+            LoopIndicatorStatus::Paused => {
+                if compact {
+                    "Loop".to_string()
+                } else {
+                    format!("Loop paused {}/{}", self.iteration, self.max_iterations)
                 }
             }
         }

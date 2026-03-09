@@ -236,6 +236,8 @@ use codex_protocol::openai_models::ModelPreset;
 use codex_protocol::openai_models::ReasoningEffort as ReasoningEffortConfig;
 use codex_protocol::plan_tool::UpdatePlanArgs;
 use codex_protocol::protocol::LoopConfig;
+use codex_protocol::protocol::LoopEventItem;
+use codex_protocol::protocol::LoopPersistenceStatus;
 use codex_protocol::protocol::LoopState;
 use codex_protocol::protocol::LoopStopReason;
 use strum::IntoEnumIterator;
@@ -266,6 +268,7 @@ struct ActiveLoopSession {
     state: LoopState,
     started_at: Instant,
     awaiting_followup_submit: bool,
+    paused: bool,
 }
 
 impl ActiveLoopSession {
@@ -273,13 +276,20 @@ impl ActiveLoopSession {
         LoopIndicatorState {
             iteration: self.state.iteration,
             max_iterations: self.state.config.max_iterations,
-            status: if self.state.iteration == 0 {
+            status: if self.paused {
+                LoopIndicatorStatus::Paused
+            } else if self.state.iteration == 0 {
                 LoopIndicatorStatus::Pending
             } else {
                 LoopIndicatorStatus::Running
             },
         }
     }
+}
+
+enum LoopCommandAction {
+    Start,
+    Continue,
 }
 
 impl UnifiedExecWaitState {
@@ -992,6 +1002,7 @@ impl ChatWidget {
         self.current_rollout_path = event.rollout_path.clone();
         self.current_cwd = Some(event.cwd.clone());
         let initial_messages = event.initial_messages.clone();
+        let active_loop_state = event.active_loop_state.clone();
         let forked_from_id = event.forked_from_id;
         let model_for_header = event.model.clone();
         self.session_header.set_model(&model_for_header);
@@ -1015,6 +1026,9 @@ impl ChatWidget {
 
         if let Some(messages) = initial_messages {
             self.replay_initial_messages(messages);
+        }
+        if let Some(loop_state) = active_loop_state {
+            self.restore_paused_loop(loop_state);
         }
         // Ask codex-core to enumerate custom prompts for this session.
         self.submit_op(Op::ListCustomPrompts);
@@ -1309,16 +1323,7 @@ impl ChatWidget {
         self.clear_unified_exec_processes();
         self.request_redraw();
 
-        let plan_prompt_opened = if !from_replay && self.queued_user_messages.is_empty() {
-            self.maybe_prompt_plan_implementation()
-        } else {
-            false
-        };
-        // Keep this flag for replayed completion events so a subsequent live TurnComplete can
-        // still show the prompt once after thread switch replay.
-        if !from_replay {
-            self.saw_plan_item_this_turn = false;
-        }
+        let loop_was_active = !from_replay && self.active_loop.is_some();
         if !from_replay && let Some(active_loop) = self.active_loop.as_mut() {
             active_loop.awaiting_followup_submit = false;
             self.sync_footer_indicators();
@@ -1327,12 +1332,22 @@ impl ChatWidget {
             self.rate_limit_switch_prompt,
             RateLimitSwitchPromptState::Pending
         );
-        let submitted_loop_followup =
-            if from_replay || plan_prompt_opened || rate_limit_prompt_pending {
-                false
+        let submitted_loop_followup = if from_replay || rate_limit_prompt_pending {
+            false
+        } else {
+            self.maybe_continue_active_loop(last_agent_message.as_deref())
+        };
+        let plan_prompt_opened =
+            if !from_replay && !loop_was_active && self.queued_user_messages.is_empty() {
+                self.maybe_prompt_plan_implementation()
             } else {
-                self.maybe_continue_active_loop(last_agent_message.as_deref())
+                false
             };
+        // Keep this flag for replayed completion events so a subsequent live TurnComplete can
+        // still show the prompt once after thread switch replay.
+        if !from_replay {
+            self.saw_plan_item_this_turn = false;
+        }
         if !submitted_loop_followup && !plan_prompt_opened && !rate_limit_prompt_pending {
             // If there is a queued user message, send exactly one now to begin the next turn.
             self.maybe_send_next_queued_input();
@@ -1693,7 +1708,10 @@ impl ChatWidget {
         let Some(active_loop) = self.active_loop.as_mut() else {
             return false;
         };
-        if !self.queued_user_messages.is_empty() || active_loop.awaiting_followup_submit {
+        if active_loop.paused
+            || !self.queued_user_messages.is_empty()
+            || active_loop.awaiting_followup_submit
+        {
             return false;
         }
         if let Some(message) = last_agent_message
@@ -1712,11 +1730,16 @@ impl ChatWidget {
             return false;
         }
 
-        let next_iteration = active_loop.state.iteration.saturating_add(1);
-        let continuation_prompt =
-            Self::build_loop_continuation_prompt(&active_loop.state.config.stop_phrase);
-        active_loop.state.iteration = next_iteration;
-        active_loop.awaiting_followup_submit = true;
+        let (next_iteration, continuation_prompt, persisted_state) = {
+            let next_iteration = active_loop.state.iteration.saturating_add(1);
+            let continuation_prompt =
+                Self::build_loop_continuation_prompt(&active_loop.state.config.stop_phrase);
+            active_loop.state.iteration = next_iteration;
+            active_loop.awaiting_followup_submit = true;
+            let persisted_state = active_loop.state.clone();
+            (next_iteration, continuation_prompt, persisted_state)
+        };
+        self.persist_loop_event(persisted_state, LoopPersistenceStatus::Active, None);
         self.sync_footer_indicators();
         self.add_info_message(format!("Loop iteration {next_iteration}"), None);
         self.submit_user_message_with_loop_submission(UserMessage::from(continuation_prompt), true);
@@ -3237,8 +3260,8 @@ impl ChatWidget {
             }
             SlashCommand::Loop => {
                 self.add_info_message(
-                    "Usage: /loop <prompt>".to_string(),
-                    Some("This command requires an inline prompt.".to_string()),
+                    "Usage: /loop <prompt> or /loop --continue".to_string(),
+                    Some("Start a loop with a prompt or continue a paused loop.".to_string()),
                 );
             }
             SlashCommand::Rename => {
@@ -3525,16 +3548,70 @@ impl ChatWidget {
                 });
                 self.bottom_pane.drain_pending_submission_state();
             }
-            SlashCommand::Loop if !trimmed.is_empty() => {
-                let Some((prepared_args, prepared_elements)) =
-                    self.bottom_pane.prepare_inline_args_submission(false)
-                else {
-                    return;
-                };
-                self.open_loop_stop_phrase_prompt(prepared_args, prepared_elements);
-            }
+            SlashCommand::Loop if !trimmed.is_empty() => match Self::parse_loop_command(trimmed) {
+                Ok(LoopCommandAction::Start) => {
+                    let Some((prepared_args, prepared_elements)) =
+                        self.bottom_pane.prepare_inline_args_submission(false)
+                    else {
+                        return;
+                    };
+                    self.open_loop_stop_phrase_prompt(prepared_args, prepared_elements);
+                }
+                Ok(LoopCommandAction::Continue) => {
+                    self.bottom_pane.drain_pending_submission_state();
+                    self.continue_paused_loop();
+                }
+                Err(err) => {
+                    self.add_error_message(err);
+                }
+            },
             _ => self.dispatch_command(cmd),
         }
+    }
+
+    fn parse_loop_command(args: &str) -> Result<LoopCommandAction, String> {
+        let tokens = shlex::split(args)
+            .ok_or_else(|| "Loop arguments contain invalid shell quoting.".to_string())?;
+        let continue_requested = tokens
+            .iter()
+            .any(|token| token == "--continue" || token == "-c");
+        if continue_requested && tokens.len() > 1 {
+            return Err("Use either /loop <prompt> or /loop --continue.".to_string());
+        }
+        if continue_requested {
+            Ok(LoopCommandAction::Continue)
+        } else {
+            Ok(LoopCommandAction::Start)
+        }
+    }
+
+    fn continue_paused_loop(&mut self) {
+        let Some(active_loop) = self.active_loop.as_ref() else {
+            self.add_info_message("No paused loop to continue.".to_string(), None);
+            return;
+        };
+        if !active_loop.paused {
+            self.add_info_message("Loop already running.".to_string(), None);
+            return;
+        }
+        if active_loop.awaiting_followup_submit || !self.queued_user_messages.is_empty() {
+            self.add_info_message("Loop cannot continue right now.".to_string(), None);
+            return;
+        }
+        if let Some(active_loop) = self.active_loop.as_mut() {
+            active_loop.paused = false;
+        }
+        self.persist_active_loop(LoopPersistenceStatus::Active, None);
+        if !self.maybe_continue_active_loop(None) {
+            if let Some(active_loop) = self.active_loop.as_mut() {
+                active_loop.paused = true;
+            }
+            self.persist_active_loop(LoopPersistenceStatus::Paused, None);
+            self.sync_footer_indicators();
+            self.add_info_message("Loop could not continue.".to_string(), None);
+            return;
+        }
+        self.sync_footer_indicators();
     }
 
     fn open_loop_stop_phrase_prompt(&mut self, prompt: String, text_elements: Vec<TextElement>) {
@@ -3682,7 +3759,9 @@ impl ChatWidget {
             },
             started_at: Instant::now(),
             awaiting_followup_submit: false,
+            paused: false,
         });
+        self.persist_active_loop(LoopPersistenceStatus::Active, None);
         self.sync_footer_indicators();
         self.add_info_message(
             format!(
@@ -3709,6 +3788,30 @@ impl ChatWidget {
             self.queue_user_message(user_message);
         }
         self.request_redraw();
+    }
+
+    fn restore_paused_loop(&mut self, loop_state: LoopState) {
+        let elapsed_secs = chrono::Utc::now()
+            .timestamp()
+            .saturating_sub(loop_state.started_at)
+            .max(0) as u64;
+        let started_at = Instant::now()
+            .checked_sub(Duration::from_secs(elapsed_secs))
+            .unwrap_or_else(Instant::now);
+        self.active_loop = Some(ActiveLoopSession {
+            state: loop_state.clone(),
+            started_at,
+            awaiting_followup_submit: false,
+            paused: true,
+        });
+        self.sync_footer_indicators();
+        self.add_info_message(
+            format!(
+                "Restored paused loop at iteration {}. Run /loop --continue to continue.",
+                loop_state.iteration
+            ),
+            None,
+        );
     }
 
     fn submit_user_message(&mut self, user_message: UserMessage) {
@@ -3882,9 +3985,14 @@ impl ChatWidget {
     }
 
     fn replace_active_loop(&mut self, reason: LoopStopReason, notify: bool) {
-        if self.active_loop.take().is_none() {
+        let Some(active_loop) = self.active_loop.take() else {
             return;
-        }
+        };
+        self.persist_loop_event(
+            active_loop.state,
+            LoopPersistenceStatus::Stopped,
+            Some(reason),
+        );
         self.queued_user_messages
             .retain(|message| !message.loop_pre_starter);
         self.refresh_queued_user_messages();
@@ -3892,6 +4000,31 @@ impl ChatWidget {
         if notify {
             self.add_info_message(Self::loop_stop_message(reason), None);
         }
+    }
+
+    fn persist_active_loop(
+        &mut self,
+        status: LoopPersistenceStatus,
+        stop_reason: Option<LoopStopReason>,
+    ) {
+        if let Some(active_loop) = self.active_loop.as_ref() {
+            self.persist_loop_event(active_loop.state.clone(), status, stop_reason);
+        }
+    }
+
+    fn persist_loop_event(
+        &mut self,
+        state: LoopState,
+        status: LoopPersistenceStatus,
+        stop_reason: Option<LoopStopReason>,
+    ) {
+        self.submit_op(Op::PersistLoopEvent {
+            event: LoopEventItem {
+                state,
+                status,
+                stop_reason,
+            },
+        });
     }
 
     fn loop_stop_message(reason: LoopStopReason) -> String {

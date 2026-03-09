@@ -2343,6 +2343,7 @@ impl App {
                 history_log_id: 0,
                 history_entry_count: 0,
                 initial_messages: None,
+                active_loop_state: None,
                 rollout_path: thread.rollout_path(),
             }),
         };
@@ -3018,6 +3019,7 @@ mod tests {
                 history_log_id: 0,
                 history_entry_count: 0,
                 initial_messages: None,
+                active_loop_state: None,
                 rollout_path: Some(PathBuf::new()),
             };
             Arc::new(new_session_info(
@@ -3072,6 +3074,7 @@ mod tests {
                 history_log_id: 0,
                 history_entry_count: 0,
                 initial_messages: None,
+                active_loop_state: None,
                 rollout_path: Some(PathBuf::new()),
             }),
         });
@@ -3118,6 +3121,7 @@ mod tests {
             history_log_id: 0,
             history_entry_count: 0,
             initial_messages: None,
+            active_loop_state: None,
             rollout_path: Some(PathBuf::new()),
         };
 

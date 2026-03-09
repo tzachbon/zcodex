@@ -41,6 +41,8 @@ use crate::path_utils;
 use crate::state_db;
 use crate::state_db::StateDbHandle;
 use codex_protocol::protocol::InitialHistory;
+use codex_protocol::protocol::LoopPersistenceStatus;
+use codex_protocol::protocol::LoopState;
 use codex_protocol::protocol::ResumedHistory;
 use codex_protocol::protocol::RolloutItem;
 use codex_protocol::protocol::RolloutLine;
@@ -454,6 +456,9 @@ impl RolloutRecorder {
                     RolloutItem::TurnContext(item) => {
                         items.push(RolloutItem::TurnContext(item));
                     }
+                    RolloutItem::LoopEvent(item) => {
+                        items.push(RolloutItem::LoopEvent(item));
+                    }
                     RolloutItem::EventMsg(_ev) => {
                         items.push(RolloutItem::EventMsg(_ev));
                     }
@@ -478,6 +483,7 @@ impl RolloutRecorder {
         let (items, thread_id, _parse_errors) = Self::load_rollout_items(path).await?;
         let conversation_id = thread_id
             .ok_or_else(|| IoError::other("failed to parse thread ID from rollout file"))?;
+        let active_loop_state = latest_active_loop_state(items.as_slice());
 
         if items.is_empty() {
             return Ok(InitialHistory::New);
@@ -488,6 +494,7 @@ impl RolloutRecorder {
             conversation_id,
             history: items,
             rollout_path: path.to_path_buf(),
+            active_loop_state,
         }))
     }
 
@@ -504,6 +511,26 @@ impl RolloutRecorder {
                 )))
             }
         }
+    }
+}
+
+fn latest_active_loop_state(items: &[RolloutItem]) -> Option<LoopState> {
+    let mut latest = None;
+    for item in items {
+        if let RolloutItem::LoopEvent(event) = item {
+            latest = Some(event.clone());
+        }
+    }
+    match latest {
+        Some(event)
+            if matches!(
+                event.status,
+                LoopPersistenceStatus::Active | LoopPersistenceStatus::Paused
+            ) =>
+        {
+            Some(event.state)
+        }
+        _ => None,
     }
 }
 
