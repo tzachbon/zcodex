@@ -20,7 +20,8 @@ pub(crate) fn builtins_for_input(
         .filter(|(_, cmd)| allow_elevate_sandbox || *cmd != SlashCommand::ElevateSandbox)
         .filter(|(_, cmd)| {
             collaboration_modes_enabled
-                || !matches!(*cmd, SlashCommand::Collab | SlashCommand::Plan)
+                || (!cmd.is_gsd_workflow()
+                    && !matches!(*cmd, SlashCommand::Collab | SlashCommand::Plan))
         })
         .filter(|(_, cmd)| connectors_enabled || *cmd != SlashCommand::Apps)
         .filter(|(_, cmd)| personality_command_enabled || *cmd != SlashCommand::Personality)
@@ -106,5 +107,33 @@ mod tests {
         assert!(names.contains(&"new-project"));
         assert!(names.contains(&"quick-plan"));
         assert!(!names.contains(&"gsd:new-project"));
+    }
+
+    #[test]
+    fn gsd_commands_are_hidden_when_collaboration_modes_disabled() {
+        let names: Vec<&str> = builtins_for_input(false, true, true, true)
+            .into_iter()
+            .map(|(name, _)| name)
+            .collect();
+        assert!(!names.contains(&"new-project"));
+        assert!(!names.contains(&"progress"));
+        assert!(!names.contains(&"workflow-help"));
+        assert!(!names.contains(&"plan"));
+    }
+
+    #[test]
+    fn gsd_alias_lookup_is_disabled_without_collaboration_modes() {
+        assert_eq!(
+            find_builtin_command("new-project", false, true, true, true),
+            None
+        );
+        assert_eq!(
+            find_builtin_command("gsd:new-project", false, true, true, true),
+            None
+        );
+        assert_eq!(
+            find_builtin_command("progress", false, true, true, true),
+            None
+        );
     }
 }

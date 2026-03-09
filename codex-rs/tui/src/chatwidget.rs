@@ -3387,8 +3387,9 @@ impl ChatWidget {
                     return;
                 };
                 let mention_paths = self.bottom_pane.take_mention_paths();
-                let workflow = Self::workflow_for_slash_command(cmd)
-                    .expect("workflow command should still resolve");
+                let Some(workflow) = Self::workflow_for_slash_command(cmd) else {
+                    return;
+                };
                 self.run_gsd_workflow_command(
                     workflow,
                     prepared_args,
@@ -3592,8 +3593,8 @@ impl ChatWidget {
             GsdWorkflowCommand::NewProject
         };
         let project_prompt = codex_core::gsd::render_workflow_prompt(project_workflow, "");
-        let project_mask_for_action = project_mask.clone();
-        let conversation_mask_for_action = conversation_mask.clone();
+        let project_mask_for_action = project_mask;
+        let conversation_mask_for_action = conversation_mask;
         let project_cwd = self.submission_cwd(None);
 
         let items = vec![

@@ -6455,14 +6455,14 @@ mod tests {
         let snapshot1 = live_history.clone().for_prompt();
         let user_messages1 = collect_user_messages(&snapshot1);
         let rebuilt1 = compact::build_compacted_history(
-            session.build_initial_context(turn_context).await,
+            session.build_live_initial_context(turn_context).await,
             &user_messages1,
             summary1,
         );
-        live_history.replace(rebuilt1);
+        live_history.replace(rebuilt1.clone());
         rollout_items.push(RolloutItem::Compacted(CompactedItem {
             message: summary1.to_string(),
-            replacement_history: None,
+            replacement_history: Some(rebuilt1),
         }));
 
         let user2 = ResponseItem::Message {
@@ -6493,14 +6493,14 @@ mod tests {
         let snapshot2 = live_history.clone().for_prompt();
         let user_messages2 = collect_user_messages(&snapshot2);
         let rebuilt2 = compact::build_compacted_history(
-            session.build_initial_context(turn_context).await,
+            session.build_live_initial_context(turn_context).await,
             &user_messages2,
             summary2,
         );
-        live_history.replace(rebuilt2);
+        live_history.replace(rebuilt2.clone());
         rollout_items.push(RolloutItem::Compacted(CompactedItem {
             message: summary2.to_string(),
-            replacement_history: None,
+            replacement_history: Some(rebuilt2),
         }));
 
         let user3 = ResponseItem::Message {

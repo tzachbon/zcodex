@@ -44,6 +44,7 @@ fn command_hook(argv: Vec<String>) -> Hook {
                     return HookOutcome::Continue;
                 };
                 command
+                    .current_dir(&payload.cwd)
                     .stdin(Stdio::piped())
                     .stdout(Stdio::null())
                     .stderr(Stdio::null());
@@ -469,6 +470,47 @@ mod tests {
         .await?;
 
         assert_eq!(contents, expected);
+        Ok(())
+    }
+
+    #[cfg(not(windows))]
+    #[tokio::test]
+    async fn command_hook_runs_in_payload_cwd() -> Result<()> {
+        let temp_dir = tempdir()?;
+        let hook = super::command_hook(vec![
+            "/bin/sh".to_string(),
+            "-c".to_string(),
+            "cat > hook-output.json".to_string(),
+        ]);
+        let payload = HookPayload {
+            session_id: ThreadId::new(),
+            cwd: temp_dir.path().to_path_buf(),
+            triggered_at: Utc
+                .with_ymd_and_hms(2025, 1, 1, 0, 0, 0)
+                .single()
+                .expect("valid timestamp"),
+            hook_event: HookEvent::SessionStart {
+                event: HookEventSessionLifecycle {
+                    thread_id: ThreadId::new(),
+                },
+            },
+        };
+
+        hook.execute(&payload).await;
+
+        let contents = timeout(Duration::from_secs(2), async {
+            loop {
+                let path = temp_dir.path().join("hook-output.json");
+                if let Ok(contents) = fs::read_to_string(&path) {
+                    break contents;
+                }
+                tokio::time::sleep(Duration::from_millis(20)).await;
+            }
+        })
+        .await
+        .expect("hook output file");
+
+        assert!(contents.contains("\"event_type\":\"session_start\""));
         Ok(())
     }
 

@@ -79,6 +79,43 @@ pub enum SlashCommand {
 }
 
 impl SlashCommand {
+    pub(crate) fn is_gsd_workflow(self) -> bool {
+        matches!(
+            self,
+            SlashCommand::QuickPlan
+                | SlashCommand::NewProject
+                | SlashCommand::NewMilestone
+                | SlashCommand::MapCodebase
+                | SlashCommand::DiscussPhase
+                | SlashCommand::PlanPhase
+                | SlashCommand::ExecutePhase
+                | SlashCommand::VerifyWork
+                | SlashCommand::Quick
+                | SlashCommand::Progress
+                | SlashCommand::ResumeWork
+                | SlashCommand::PauseWork
+                | SlashCommand::WorkflowSettings
+                | SlashCommand::WorkflowProfile
+                | SlashCommand::WorkflowHelp
+                | SlashCommand::AddPhase
+                | SlashCommand::InsertPhase
+                | SlashCommand::RemovePhase
+                | SlashCommand::PhaseAssumptions
+                | SlashCommand::PlanMilestoneGaps
+                | SlashCommand::ResearchPhase
+                | SlashCommand::ValidatePhase
+                | SlashCommand::WorkflowUpdate
+                | SlashCommand::WorkflowHealth
+                | SlashCommand::DebugWorkflow
+                | SlashCommand::CleanupWorkflow
+                | SlashCommand::AddTodo
+                | SlashCommand::Todos
+                | SlashCommand::AuditMilestone
+                | SlashCommand::CompleteMilestone
+                | SlashCommand::ReapplyPatches
+        )
+    }
+
     /// User-visible description shown in the popup.
     pub fn description(self) -> &'static str {
         match self {
@@ -232,8 +269,7 @@ impl SlashCommand {
     /// Whether this command can be run while a task is in progress.
     pub fn available_during_task(self) -> bool {
         match self {
-            SlashCommand::Plan
-            | SlashCommand::QuickPlan
+            SlashCommand::QuickPlan
             | SlashCommand::NewProject
             | SlashCommand::NewMilestone
             | SlashCommand::MapCodebase
@@ -242,13 +278,16 @@ impl SlashCommand {
             | SlashCommand::ExecutePhase
             | SlashCommand::VerifyWork
             | SlashCommand::Quick
+            | SlashCommand::Progress
             | SlashCommand::ResumeWork
             | SlashCommand::PauseWork
             | SlashCommand::WorkflowSettings
             | SlashCommand::WorkflowProfile
+            | SlashCommand::WorkflowHelp
             | SlashCommand::AddPhase
             | SlashCommand::InsertPhase
             | SlashCommand::RemovePhase
+            | SlashCommand::PhaseAssumptions
             | SlashCommand::PlanMilestoneGaps
             | SlashCommand::ResearchPhase
             | SlashCommand::ValidatePhase
@@ -257,9 +296,12 @@ impl SlashCommand {
             | SlashCommand::DebugWorkflow
             | SlashCommand::CleanupWorkflow
             | SlashCommand::AddTodo
+            | SlashCommand::Todos
             | SlashCommand::AuditMilestone
             | SlashCommand::CompleteMilestone
             | SlashCommand::ReapplyPatches => false,
+            SlashCommand::Plan
+            => false,
             SlashCommand::New
             | SlashCommand::Resume
             | SlashCommand::Fork
@@ -285,11 +327,7 @@ impl SlashCommand {
             | SlashCommand::Apps
             | SlashCommand::Feedback
             | SlashCommand::Quit
-            | SlashCommand::Exit
-            | SlashCommand::Progress
-            | SlashCommand::WorkflowHelp
-            | SlashCommand::PhaseAssumptions
-            | SlashCommand::Todos => true,
+            | SlashCommand::Exit => true,
             SlashCommand::Rollout => true,
             SlashCommand::TestApproval => true,
             SlashCommand::Collab => true,
@@ -312,4 +350,24 @@ pub fn built_in_slash_commands() -> Vec<(&'static str, SlashCommand)> {
         .filter(|command| command.is_visible())
         .map(|c| (c.command(), c))
         .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::SlashCommand;
+
+    #[test]
+    fn gsd_workflow_commands_are_not_available_during_task() {
+        for command in [
+            SlashCommand::Progress,
+            SlashCommand::WorkflowHelp,
+            SlashCommand::PhaseAssumptions,
+            SlashCommand::Todos,
+            SlashCommand::PlanPhase,
+            SlashCommand::QuickPlan,
+        ] {
+            assert!(command.is_gsd_workflow());
+            assert!(!command.available_during_task());
+        }
+    }
 }
