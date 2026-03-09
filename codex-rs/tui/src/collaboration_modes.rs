@@ -59,3 +59,13 @@ pub(crate) fn default_mode_mask(models_manager: &ModelsManager) -> Option<Collab
 pub(crate) fn plan_mask(models_manager: &ModelsManager) -> Option<CollaborationModeMask> {
     mask_for_kind(models_manager, ModeKind::Plan)
 }
+
+pub(crate) fn hidden_mask_for_kind(
+    models_manager: &ModelsManager,
+    kind: ModeKind,
+) -> Option<CollaborationModeMask> {
+    models_manager
+        .list_collaboration_modes()
+        .into_iter()
+        .find(|mask| mask.mode == Some(kind))
+}

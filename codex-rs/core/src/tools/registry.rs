@@ -16,6 +16,9 @@ use tracing::warn;
 use crate::client_common::tools::ToolSpec;
 use crate::exec::SandboxType;
 use crate::function_tool::FunctionCallError;
+use crate::hooks::HookEvent;
+use crate::hooks::HookEventAfterTool;
+use crate::hooks::HookPayload;
 use crate::protocol::SandboxPolicy;
 use crate::safety::get_platform_sandbox;
 use crate::tools::context::ToolInvocation;
@@ -220,6 +223,8 @@ impl ToolRegistry {
     ) -> Result<ResponseInputItem, FunctionCallError> {
         let tool_name = invocation.tool_name.clone();
         let call_id_owned = invocation.call_id.clone();
+        let hook_session = invocation.session.clone();
+        let hook_turn = invocation.turn.clone();
         let otel = invocation.turn.otel_manager.clone();
         let payload_for_response = invocation.payload.clone();
         let log_payload = payload_for_response.log_payload();
@@ -325,6 +330,14 @@ impl ToolRegistry {
                         // The otel log already captured the metadata.
                         wait_for_tool_gate_if_needed(&handler, &invocation).await;
                         let out = handler.handle(invocation).await?;
+                        dispatch_after_tool_hook(
+                            hook_session.as_ref(),
+                            hook_turn.as_ref(),
+                            &tool_name,
+                            &call_id_owned,
+                            &out,
+                        )
+                        .await;
                         Ok(out.into_response(&call_id_owned, &payload_for_response))
                     }
                     Err(err) => Err(err),
@@ -368,11 +381,45 @@ impl ToolRegistry {
                 let output = guard.take().ok_or_else(|| {
                     FunctionCallError::Fatal("tool produced no output".to_string())
                 })?;
+                dispatch_after_tool_hook(
+                    hook_session.as_ref(),
+                    hook_turn.as_ref(),
+                    &tool_name,
+                    &call_id_owned,
+                    &output,
+                )
+                .await;
                 Ok(output.into_response(&call_id_owned, &payload_for_response))
             }
             Err(err) => Err(err),
         }
     }
+}
+
+async fn dispatch_after_tool_hook(
+    session: &crate::codex::Session,
+    turn: &crate::codex::TurnContext,
+    tool_name: &str,
+    call_id: &str,
+    output: &ToolOutput,
+) {
+    session
+        .hooks()
+        .dispatch(HookPayload {
+            session_id: session.conversation_id,
+            cwd: turn.cwd.clone(),
+            triggered_at: chrono::Utc::now(),
+            hook_event: HookEvent::AfterTool {
+                event: HookEventAfterTool {
+                    thread_id: session.conversation_id,
+                    turn_id: turn.sub_id.clone(),
+                    call_id: call_id.to_string(),
+                    tool_name: tool_name.to_string(),
+                    success: output.success_for_logging(),
+                },
+            },
+        })
+        .await;
 }
 
 #[derive(Debug, Clone)]

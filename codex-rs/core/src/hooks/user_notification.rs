@@ -40,6 +40,15 @@ pub(super) fn legacy_notify_json(
             input_messages: event.input_messages.clone(),
             last_assistant_message: event.last_assistant_message.clone(),
         },
+        HookEvent::AfterTool { .. }
+        | HookEvent::SessionStart { .. }
+        | HookEvent::SessionResume { .. } => UserNotification::AgentTurnComplete {
+            thread_id: String::new(),
+            turn_id: String::new(),
+            cwd: cwd.display().to_string(),
+            input_messages: Vec::new(),
+            last_assistant_message: None,
+        },
     })
 }
 

@@ -1,3 +1,7 @@
+use std::process::Stdio;
+use std::sync::Arc;
+
+use tokio::io::AsyncWriteExt;
 use tokio::process::Command;
 
 use super::types::Hook;
@@ -10,6 +14,9 @@ use crate::config::Config;
 #[derive(Default, Clone)]
 pub(crate) struct Hooks {
     after_agent: Vec<Hook>,
+    after_tool: Vec<Hook>,
+    session_start: Vec<Hook>,
+    session_resume: Vec<Hook>,
 }
 
 fn get_notify_hook(config: &Config) -> Option<Hook> {
@@ -20,6 +27,40 @@ fn get_notify_hook(config: &Config) -> Option<Hook> {
         .map(|argv| notify_hook(argv.clone()))
 }
 
+fn command_hook(argv: Vec<String>) -> Hook {
+    Hook {
+        func: Arc::new(move |payload: &HookPayload| {
+            let argv = argv.clone();
+            Box::pin(async move {
+                let json = match serde_json::to_string(payload) {
+                    Ok(json) => json,
+                    Err(_) => return HookOutcome::Continue,
+                };
+                let Some(mut command) = command_from_argv(&argv) else {
+                    return HookOutcome::Continue;
+                };
+                command
+                    .stdin(Stdio::piped())
+                    .stdout(Stdio::null())
+                    .stderr(Stdio::null());
+
+                let Ok(mut child) = command.spawn() else {
+                    return HookOutcome::Continue;
+                };
+                let stdin = child.stdin.take();
+                tokio::spawn(async move {
+                    if let Some(mut stdin) = stdin {
+                        let _ = stdin.write_all(json.as_bytes()).await;
+                        let _ = stdin.shutdown().await;
+                    }
+                    let _ = child.wait().await;
+                });
+                HookOutcome::Continue
+            })
+        }),
+    }
+}
+
 // Hooks are arbitrary, user-specified functions that are deterministically
 // executed after specific events in the Codex lifecycle.
 impl Hooks {
@@ -27,13 +68,53 @@ impl Hooks {
     // For legacy compatibility, if config.notify is set, it will be added to
     // the after_agent hooks.
     pub(crate) fn new(config: &Config) -> Self {
-        let after_agent = get_notify_hook(config).into_iter().collect();
-        Self { after_agent }
+        let mut after_agent: Vec<Hook> = config
+            .hooks
+            .after_agent
+            .iter()
+            .filter(|argv| !argv.is_empty())
+            .cloned()
+            .map(command_hook)
+            .collect();
+        after_agent.extend(get_notify_hook(config));
+        let after_tool: Vec<Hook> = config
+            .hooks
+            .after_tool
+            .iter()
+            .filter(|argv| !argv.is_empty())
+            .cloned()
+            .map(command_hook)
+            .collect();
+        let session_start: Vec<Hook> = config
+            .hooks
+            .session_start
+            .iter()
+            .filter(|argv| !argv.is_empty())
+            .cloned()
+            .map(command_hook)
+            .collect();
+        let session_resume: Vec<Hook> = config
+            .hooks
+            .session_resume
+            .iter()
+            .filter(|argv| !argv.is_empty())
+            .cloned()
+            .map(command_hook)
+            .collect();
+        Self {
+            after_agent,
+            after_tool,
+            session_start,
+            session_resume,
+        }
     }
 
     fn hooks_for_event(&self, hook_event: &HookEvent) -> &[Hook] {
         match hook_event {
             HookEvent::AfterAgent { .. } => &self.after_agent,
+            HookEvent::AfterTool { .. } => &self.after_tool,
+            HookEvent::SessionStart { .. } => &self.session_start,
+            HookEvent::SessionResume { .. } => &self.session_resume,
         }
     }
 
@@ -124,7 +205,12 @@ mod tests {
     }
 
     fn hooks_for_after_agent(hooks: Vec<Hook>) -> Hooks {
-        Hooks { after_agent: hooks }
+        Hooks {
+            after_agent: hooks,
+            after_tool: Vec::new(),
+            session_start: Vec::new(),
+            session_resume: Vec::new(),
+        }
     }
 
     #[test]
@@ -205,6 +291,35 @@ mod tests {
 
         hooks.dispatch(hook_payload("3")).await;
         assert_eq!(calls.load(Ordering::SeqCst), 1);
+    }
+
+    #[test]
+    fn hooks_new_loads_all_configured_command_groups() {
+        let mut config = test_config();
+        config.hooks.after_agent = vec![vec!["echo".to_string(), "agent".to_string()]];
+        config.hooks.after_tool = vec![vec!["echo".to_string(), "tool".to_string()]];
+        config.hooks.session_start = vec![vec!["echo".to_string(), "start".to_string()]];
+        config.hooks.session_resume = vec![vec!["echo".to_string(), "resume".to_string()]];
+
+        let hooks = Hooks::new(&config);
+
+        assert_eq!(hooks.after_agent.len(), 1);
+        assert_eq!(hooks.after_tool.len(), 1);
+        assert_eq!(hooks.session_start.len(), 1);
+        assert_eq!(hooks.session_resume.len(), 1);
+    }
+
+    #[test]
+    fn hooks_new_keeps_legacy_notify_on_after_agent() {
+        let mut config = test_config();
+        config.notify = Some(vec!["notify-send".to_string()]);
+
+        let hooks = Hooks::new(&config);
+
+        assert_eq!(hooks.after_agent.len(), 1);
+        assert!(hooks.after_tool.is_empty());
+        assert!(hooks.session_start.is_empty());
+        assert!(hooks.session_resume.is_empty());
     }
 
     #[cfg(not(windows))]

@@ -12,6 +12,22 @@ use strum_macros::IntoStaticStr;
 pub enum SlashCommand {
     // DO NOT ALPHA-SORT! Enum order is presentation order in the popup, so
     // more frequently used commands should be listed first.
+    Plan,
+    QuickPlan,
+    NewProject,
+    NewMilestone,
+    MapCodebase,
+    DiscussPhase,
+    PlanPhase,
+    ExecutePhase,
+    VerifyWork,
+    Quick,
+    Progress,
+    ResumeWork,
+    PauseWork,
+    WorkflowSettings,
+    WorkflowProfile,
+    WorkflowHelp,
     Model,
     Approvals,
     Permissions,
@@ -26,9 +42,24 @@ pub enum SlashCommand {
     Fork,
     Init,
     Compact,
-    Plan,
     Collab,
     Agent,
+    AddPhase,
+    InsertPhase,
+    RemovePhase,
+    PhaseAssumptions,
+    PlanMilestoneGaps,
+    ResearchPhase,
+    ValidatePhase,
+    WorkflowUpdate,
+    WorkflowHealth,
+    DebugWorkflow,
+    CleanupWorkflow,
+    AddTodo,
+    Todos,
+    AuditMilestone,
+    CompleteMilestone,
+    ReapplyPatches,
     // Undo,
     Diff,
     Mention,
@@ -51,6 +82,22 @@ impl SlashCommand {
     /// User-visible description shown in the popup.
     pub fn description(self) -> &'static str {
         match self {
+            SlashCommand::Plan => "open the GSD planning hub",
+            SlashCommand::QuickPlan => "run GSD quick planning only",
+            SlashCommand::NewProject => "start a new GSD project",
+            SlashCommand::NewMilestone => "start a new GSD milestone",
+            SlashCommand::MapCodebase => "map the current codebase for GSD",
+            SlashCommand::DiscussPhase => "capture implementation preferences for a phase",
+            SlashCommand::PlanPhase => "research and plan a GSD phase",
+            SlashCommand::ExecutePhase => "execute the current GSD phase",
+            SlashCommand::VerifyWork => "verify the current GSD work",
+            SlashCommand::Quick => "run the GSD quick workflow",
+            SlashCommand::Progress => "show GSD workflow progress",
+            SlashCommand::ResumeWork => "resume GSD workflow context",
+            SlashCommand::PauseWork => "save a GSD workflow handoff",
+            SlashCommand::WorkflowSettings => "inspect or change GSD workflow settings",
+            SlashCommand::WorkflowProfile => "switch the active GSD workflow profile",
+            SlashCommand::WorkflowHelp => "show GSD workflow help",
             SlashCommand::Feedback => "send logs to maintainers",
             SlashCommand::New => "start a new chat during a conversation",
             SlashCommand::Init => "create an AGENTS.md file with instructions for Codex",
@@ -70,9 +117,24 @@ impl SlashCommand {
             SlashCommand::Ps => "list background terminals",
             SlashCommand::Model => "choose what model and reasoning effort to use",
             SlashCommand::Personality => "choose a communication style for Codex",
-            SlashCommand::Plan => "switch to Plan mode",
             SlashCommand::Collab => "change collaboration mode (experimental)",
             SlashCommand::Agent => "switch the active agent thread",
+            SlashCommand::AddPhase => "append a phase to the GSD roadmap",
+            SlashCommand::InsertPhase => "insert a phase into the GSD roadmap",
+            SlashCommand::RemovePhase => "remove a future GSD phase",
+            SlashCommand::PhaseAssumptions => "list assumptions for a GSD phase",
+            SlashCommand::PlanMilestoneGaps => "turn milestone gaps into planned work",
+            SlashCommand::ResearchPhase => "run research only for a GSD phase",
+            SlashCommand::ValidatePhase => "retroactively validate a GSD phase",
+            SlashCommand::WorkflowUpdate => "show vendored GSD update information",
+            SlashCommand::WorkflowHealth => "check GSD planning state health",
+            SlashCommand::DebugWorkflow => "run the GSD debugging workflow",
+            SlashCommand::CleanupWorkflow => "run the GSD cleanup workflow",
+            SlashCommand::AddTodo => "add a GSD workflow todo",
+            SlashCommand::Todos => "show GSD workflow todos",
+            SlashCommand::AuditMilestone => "audit the current GSD milestone",
+            SlashCommand::CompleteMilestone => "complete the current GSD milestone",
+            SlashCommand::ReapplyPatches => "reapply local GSD workflow patches",
             SlashCommand::Approvals => "choose what Codex can do without approval",
             SlashCommand::Permissions => "choose what Codex is allowed to do",
             SlashCommand::ElevateSandbox => "set up elevated agent sandbox",
@@ -91,17 +153,113 @@ impl SlashCommand {
         self.into()
     }
 
+    pub fn aliases(self) -> &'static [&'static str] {
+        match self {
+            SlashCommand::NewProject => &["gsd:new-project"],
+            SlashCommand::NewMilestone => &["gsd:new-milestone"],
+            SlashCommand::MapCodebase => &["gsd:map-codebase"],
+            SlashCommand::DiscussPhase => &["gsd:discuss-phase"],
+            SlashCommand::PlanPhase => &["gsd:plan-phase"],
+            SlashCommand::ExecutePhase => &["gsd:execute-phase"],
+            SlashCommand::VerifyWork => &["gsd:verify-work"],
+            SlashCommand::Quick => &["gsd:quick"],
+            SlashCommand::Progress => &["gsd:progress"],
+            SlashCommand::ResumeWork => &["gsd:resume-work"],
+            SlashCommand::PauseWork => &["gsd:pause-work"],
+            SlashCommand::WorkflowSettings => &["gsd:settings"],
+            SlashCommand::WorkflowProfile => &["gsd:set-profile"],
+            SlashCommand::WorkflowHelp => &["gsd:help"],
+            SlashCommand::AddPhase => &["gsd:add-phase"],
+            SlashCommand::InsertPhase => &["gsd:insert-phase"],
+            SlashCommand::RemovePhase => &["gsd:remove-phase"],
+            SlashCommand::PhaseAssumptions => &["gsd:list-phase-assumptions"],
+            SlashCommand::PlanMilestoneGaps => &["gsd:plan-milestone-gaps"],
+            SlashCommand::ResearchPhase => &["gsd:research-phase"],
+            SlashCommand::ValidatePhase => &["gsd:validate-phase"],
+            SlashCommand::WorkflowUpdate => &["gsd:update"],
+            SlashCommand::WorkflowHealth => &["gsd:health"],
+            SlashCommand::DebugWorkflow => &["gsd:debug"],
+            SlashCommand::CleanupWorkflow => &["gsd:cleanup"],
+            SlashCommand::AddTodo => &["gsd:add-todo"],
+            SlashCommand::Todos => &["gsd:check-todos"],
+            SlashCommand::AuditMilestone => &["gsd:audit-milestone"],
+            SlashCommand::CompleteMilestone => &["gsd:complete-milestone"],
+            SlashCommand::ReapplyPatches => &["gsd:reapply-patches"],
+            _ => &[],
+        }
+    }
+
     /// Whether this command supports inline args (for example `/review ...`).
     pub fn supports_inline_args(self) -> bool {
         matches!(
             self,
-            SlashCommand::Review | SlashCommand::Rename | SlashCommand::Plan
+            SlashCommand::Review
+                | SlashCommand::Rename
+                | SlashCommand::QuickPlan
+                | SlashCommand::NewProject
+                | SlashCommand::NewMilestone
+                | SlashCommand::MapCodebase
+                | SlashCommand::DiscussPhase
+                | SlashCommand::PlanPhase
+                | SlashCommand::ExecutePhase
+                | SlashCommand::VerifyWork
+                | SlashCommand::Quick
+                | SlashCommand::Progress
+                | SlashCommand::ResumeWork
+                | SlashCommand::PauseWork
+                | SlashCommand::WorkflowSettings
+                | SlashCommand::WorkflowProfile
+                | SlashCommand::WorkflowHelp
+                | SlashCommand::AddPhase
+                | SlashCommand::InsertPhase
+                | SlashCommand::RemovePhase
+                | SlashCommand::PhaseAssumptions
+                | SlashCommand::PlanMilestoneGaps
+                | SlashCommand::ResearchPhase
+                | SlashCommand::ValidatePhase
+                | SlashCommand::WorkflowUpdate
+                | SlashCommand::WorkflowHealth
+                | SlashCommand::DebugWorkflow
+                | SlashCommand::CleanupWorkflow
+                | SlashCommand::AddTodo
+                | SlashCommand::Todos
+                | SlashCommand::AuditMilestone
+                | SlashCommand::CompleteMilestone
+                | SlashCommand::ReapplyPatches
         )
     }
 
     /// Whether this command can be run while a task is in progress.
     pub fn available_during_task(self) -> bool {
         match self {
+            SlashCommand::Plan
+            | SlashCommand::QuickPlan
+            | SlashCommand::NewProject
+            | SlashCommand::NewMilestone
+            | SlashCommand::MapCodebase
+            | SlashCommand::DiscussPhase
+            | SlashCommand::PlanPhase
+            | SlashCommand::ExecutePhase
+            | SlashCommand::VerifyWork
+            | SlashCommand::Quick
+            | SlashCommand::ResumeWork
+            | SlashCommand::PauseWork
+            | SlashCommand::WorkflowSettings
+            | SlashCommand::WorkflowProfile
+            | SlashCommand::AddPhase
+            | SlashCommand::InsertPhase
+            | SlashCommand::RemovePhase
+            | SlashCommand::PlanMilestoneGaps
+            | SlashCommand::ResearchPhase
+            | SlashCommand::ValidatePhase
+            | SlashCommand::WorkflowUpdate
+            | SlashCommand::WorkflowHealth
+            | SlashCommand::DebugWorkflow
+            | SlashCommand::CleanupWorkflow
+            | SlashCommand::AddTodo
+            | SlashCommand::AuditMilestone
+            | SlashCommand::CompleteMilestone
+            | SlashCommand::ReapplyPatches => false,
             SlashCommand::New
             | SlashCommand::Resume
             | SlashCommand::Fork
@@ -115,7 +273,6 @@ impl SlashCommand {
             | SlashCommand::ElevateSandbox
             | SlashCommand::Experimental
             | SlashCommand::Review
-            | SlashCommand::Plan
             | SlashCommand::Logout => false,
             SlashCommand::Diff
             | SlashCommand::Rename
@@ -128,7 +285,11 @@ impl SlashCommand {
             | SlashCommand::Apps
             | SlashCommand::Feedback
             | SlashCommand::Quit
-            | SlashCommand::Exit => true,
+            | SlashCommand::Exit
+            | SlashCommand::Progress
+            | SlashCommand::WorkflowHelp
+            | SlashCommand::PhaseAssumptions
+            | SlashCommand::Todos => true,
             SlashCommand::Rollout => true,
             SlashCommand::TestApproval => true,
             SlashCommand::Collab => true,

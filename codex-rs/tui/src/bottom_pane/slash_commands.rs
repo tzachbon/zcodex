@@ -42,7 +42,7 @@ pub(crate) fn find_builtin_command(
         allow_elevate_sandbox,
     )
     .into_iter()
-    .find(|(command_name, _)| *command_name == name)
+    .find(|(command_name, cmd)| *command_name == name || cmd.aliases().contains(&name))
     .map(|(_, cmd)| cmd)
 }
 
@@ -61,5 +61,50 @@ pub(crate) fn has_builtin_prefix(
         allow_elevate_sandbox,
     )
     .into_iter()
-    .any(|(command_name, _)| fuzzy_match(command_name, name).is_some())
+    .any(|(command_name, cmd)| {
+        fuzzy_match(command_name, name).is_some()
+            || cmd
+                .aliases()
+                .iter()
+                .any(|alias| fuzzy_match(alias, name).is_some())
+    })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::slash_command::SlashCommand;
+
+    #[test]
+    fn alias_lookup_resolves_hidden_gsd_commands() {
+        assert_eq!(
+            find_builtin_command("gsd:new-project", true, true, true, true),
+            Some(SlashCommand::NewProject)
+        );
+        assert_eq!(
+            find_builtin_command("gsd:plan-phase", true, true, true, true),
+            Some(SlashCommand::PlanPhase)
+        );
+        assert_eq!(
+            find_builtin_command("gsd:check-todos", true, true, true, true),
+            Some(SlashCommand::Todos)
+        );
+    }
+
+    #[test]
+    fn builtin_prefix_matches_aliases() {
+        assert!(has_builtin_prefix("gsd:new-proj", true, true, true, true));
+        assert!(has_builtin_prefix("gsd:plan-ph", true, true, true, true));
+    }
+
+    #[test]
+    fn builtins_list_shows_native_names_only() {
+        let names: Vec<&str> = builtins_for_input(true, true, true, true)
+            .into_iter()
+            .map(|(name, _)| name)
+            .collect();
+        assert!(names.contains(&"new-project"));
+        assert!(names.contains(&"quick-plan"));
+        assert!(!names.contains(&"gsd:new-project"));
+    }
 }

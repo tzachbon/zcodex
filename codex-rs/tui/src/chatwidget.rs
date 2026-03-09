@@ -51,6 +51,7 @@ use codex_core::find_thread_name_by_id;
 use codex_core::git_info::current_branch_name;
 use codex_core::git_info::get_git_repo_root;
 use codex_core::git_info::local_git_branches;
+use codex_core::gsd::GsdWorkflowCommand;
 use codex_core::models_manager::manager::ModelsManager;
 use codex_core::project_doc::DEFAULT_PROJECT_DOC_FILENAME;
 use codex_core::protocol::AgentMessageDeltaEvent;
@@ -144,6 +145,7 @@ const PLAN_IMPLEMENTATION_TITLE: &str = "Implement this plan?";
 const PLAN_IMPLEMENTATION_YES: &str = "Yes, implement this plan";
 const PLAN_IMPLEMENTATION_NO: &str = "No, stay in Plan mode";
 const PLAN_IMPLEMENTATION_CODING_MESSAGE: &str = "Implement the plan.";
+const GSD_PROJECT_PATH: &str = ".planning/PROJECT.md";
 
 use crate::app_event::AppEvent;
 use crate::app_event::ConnectorsSnapshot;
@@ -3085,7 +3087,14 @@ impl ChatWidget {
             self.request_redraw();
             return;
         }
+        if let Some(workflow) = Self::workflow_for_slash_command(cmd) {
+            self.run_gsd_workflow_command(workflow, String::new());
+            return;
+        }
         match cmd {
+            SlashCommand::Plan => {
+                self.open_plan_hub();
+            }
             SlashCommand::Feedback => {
                 if !self.config.feedback_enabled {
                     let params = crate::bottom_pane::feedback_disabled_params();
@@ -3136,20 +3145,6 @@ impl ChatWidget {
             }
             SlashCommand::Personality => {
                 self.open_personality_popup();
-            }
-            SlashCommand::Plan => {
-                if !self.collaboration_modes_enabled() {
-                    self.add_info_message(
-                        "Collaboration modes are disabled.".to_string(),
-                        Some("Enable collaboration modes to use /plan.".to_string()),
-                    );
-                    return;
-                }
-                if let Some(mask) = collaboration_modes::plan_mask(self.models_manager.as_ref()) {
-                    self.set_collaboration_mask(mask);
-                } else {
-                    self.add_info_message("Plan mode unavailable right now.".to_string(), None);
-                }
             }
             SlashCommand::Collab => {
                 if !self.collaboration_modes_enabled() {
@@ -3322,6 +3317,37 @@ impl ChatWidget {
                     }),
                 }));
             }
+            SlashCommand::QuickPlan
+            | SlashCommand::NewProject
+            | SlashCommand::NewMilestone
+            | SlashCommand::MapCodebase
+            | SlashCommand::DiscussPhase
+            | SlashCommand::PlanPhase
+            | SlashCommand::ExecutePhase
+            | SlashCommand::VerifyWork
+            | SlashCommand::Quick
+            | SlashCommand::Progress
+            | SlashCommand::ResumeWork
+            | SlashCommand::PauseWork
+            | SlashCommand::WorkflowSettings
+            | SlashCommand::WorkflowProfile
+            | SlashCommand::WorkflowHelp
+            | SlashCommand::AddPhase
+            | SlashCommand::InsertPhase
+            | SlashCommand::RemovePhase
+            | SlashCommand::PhaseAssumptions
+            | SlashCommand::PlanMilestoneGaps
+            | SlashCommand::ResearchPhase
+            | SlashCommand::ValidatePhase
+            | SlashCommand::WorkflowUpdate
+            | SlashCommand::WorkflowHealth
+            | SlashCommand::DebugWorkflow
+            | SlashCommand::CleanupWorkflow
+            | SlashCommand::AddTodo
+            | SlashCommand::Todos
+            | SlashCommand::AuditMilestone
+            | SlashCommand::CompleteMilestone
+            | SlashCommand::ReapplyPatches => unreachable!("workflow commands should return early"),
         }
     }
 
@@ -3347,6 +3373,17 @@ impl ChatWidget {
 
         let trimmed = args.trim();
         match cmd {
+            _ if Self::workflow_for_slash_command(cmd).is_some() => {
+                let Some((prepared_args, _prepared_elements)) =
+                    self.bottom_pane.prepare_inline_args_submission(false)
+                else {
+                    return;
+                };
+                let workflow = Self::workflow_for_slash_command(cmd)
+                    .expect("workflow command should still resolve");
+                self.run_gsd_workflow_command(workflow, prepared_args);
+                self.bottom_pane.drain_pending_submission_state();
+            }
             SlashCommand::Rename if !trimmed.is_empty() => {
                 self.otel_manager.counter("codex.thread.rename", 1, &[]);
                 let Some((prepared_args, _prepared_elements)) =
@@ -3364,33 +3401,6 @@ impl ChatWidget {
                 self.app_event_tx
                     .send(AppEvent::CodexOp(Op::SetThreadName { name }));
                 self.bottom_pane.drain_pending_submission_state();
-            }
-            SlashCommand::Plan if !trimmed.is_empty() => {
-                self.dispatch_command(cmd);
-                if self.active_mode_kind() != ModeKind::Plan {
-                    return;
-                }
-                let Some((prepared_args, prepared_elements)) =
-                    self.bottom_pane.prepare_inline_args_submission(true)
-                else {
-                    return;
-                };
-                let user_message = UserMessage {
-                    text: prepared_args,
-                    local_images: self
-                        .bottom_pane
-                        .take_recent_submission_images_with_placeholders(),
-                    text_elements: prepared_elements,
-                    mention_paths: self.bottom_pane.take_mention_paths(),
-                };
-                if self.is_session_configured() {
-                    self.reasoning_buffer.clear();
-                    self.full_reasoning_buffer.clear();
-                    self.set_status_header(String::from("Working"));
-                    self.submit_user_message(user_message);
-                } else {
-                    self.queue_user_message(user_message);
-                }
             }
             SlashCommand::Review if !trimmed.is_empty() => {
                 let Some((prepared_args, _prepared_elements)) =
@@ -3410,6 +3420,173 @@ impl ChatWidget {
             }
             _ => self.dispatch_command(cmd),
         }
+    }
+
+    fn workflow_for_slash_command(cmd: SlashCommand) -> Option<GsdWorkflowCommand> {
+        match cmd {
+            SlashCommand::QuickPlan => Some(GsdWorkflowCommand::QuickPlan),
+            SlashCommand::NewProject => Some(GsdWorkflowCommand::NewProject),
+            SlashCommand::NewMilestone => Some(GsdWorkflowCommand::NewMilestone),
+            SlashCommand::MapCodebase => Some(GsdWorkflowCommand::MapCodebase),
+            SlashCommand::DiscussPhase => Some(GsdWorkflowCommand::DiscussPhase),
+            SlashCommand::PlanPhase => Some(GsdWorkflowCommand::PlanPhase),
+            SlashCommand::ExecutePhase => Some(GsdWorkflowCommand::ExecutePhase),
+            SlashCommand::VerifyWork => Some(GsdWorkflowCommand::VerifyWork),
+            SlashCommand::Quick => Some(GsdWorkflowCommand::Quick),
+            SlashCommand::Progress => Some(GsdWorkflowCommand::Progress),
+            SlashCommand::ResumeWork => Some(GsdWorkflowCommand::ResumeWork),
+            SlashCommand::PauseWork => Some(GsdWorkflowCommand::PauseWork),
+            SlashCommand::WorkflowSettings => Some(GsdWorkflowCommand::WorkflowSettings),
+            SlashCommand::WorkflowProfile => Some(GsdWorkflowCommand::WorkflowProfile),
+            SlashCommand::WorkflowHelp => Some(GsdWorkflowCommand::WorkflowHelp),
+            SlashCommand::AddPhase => Some(GsdWorkflowCommand::AddPhase),
+            SlashCommand::InsertPhase => Some(GsdWorkflowCommand::InsertPhase),
+            SlashCommand::RemovePhase => Some(GsdWorkflowCommand::RemovePhase),
+            SlashCommand::PhaseAssumptions => Some(GsdWorkflowCommand::PhaseAssumptions),
+            SlashCommand::PlanMilestoneGaps => Some(GsdWorkflowCommand::PlanMilestoneGaps),
+            SlashCommand::ResearchPhase => Some(GsdWorkflowCommand::ResearchPhase),
+            SlashCommand::ValidatePhase => Some(GsdWorkflowCommand::ValidatePhase),
+            SlashCommand::WorkflowUpdate => Some(GsdWorkflowCommand::WorkflowUpdate),
+            SlashCommand::WorkflowHealth => Some(GsdWorkflowCommand::WorkflowHealth),
+            SlashCommand::DebugWorkflow => Some(GsdWorkflowCommand::DebugWorkflow),
+            SlashCommand::CleanupWorkflow => Some(GsdWorkflowCommand::CleanupWorkflow),
+            SlashCommand::AddTodo => Some(GsdWorkflowCommand::AddTodo),
+            SlashCommand::Todos => Some(GsdWorkflowCommand::Todos),
+            SlashCommand::AuditMilestone => Some(GsdWorkflowCommand::AuditMilestone),
+            SlashCommand::CompleteMilestone => Some(GsdWorkflowCommand::CompleteMilestone),
+            SlashCommand::ReapplyPatches => Some(GsdWorkflowCommand::ReapplyPatches),
+            SlashCommand::Plan
+            | SlashCommand::Feedback
+            | SlashCommand::Model
+            | SlashCommand::Approvals
+            | SlashCommand::Permissions
+            | SlashCommand::ElevateSandbox
+            | SlashCommand::Experimental
+            | SlashCommand::Skills
+            | SlashCommand::Review
+            | SlashCommand::Rename
+            | SlashCommand::New
+            | SlashCommand::Resume
+            | SlashCommand::Fork
+            | SlashCommand::Init
+            | SlashCommand::Compact
+            | SlashCommand::Collab
+            | SlashCommand::Agent
+            | SlashCommand::Diff
+            | SlashCommand::Mention
+            | SlashCommand::Status
+            | SlashCommand::DebugConfig
+            | SlashCommand::Statusline
+            | SlashCommand::Mcp
+            | SlashCommand::Apps
+            | SlashCommand::Logout
+            | SlashCommand::Quit
+            | SlashCommand::Exit
+            | SlashCommand::Rollout
+            | SlashCommand::Ps
+            | SlashCommand::Personality
+            | SlashCommand::TestApproval => None,
+        }
+    }
+
+    fn collaboration_mask_for_kind(&self, kind: ModeKind) -> Option<CollaborationModeMask> {
+        match kind {
+            ModeKind::ConversationPlan => {
+                collaboration_modes::hidden_mask_for_kind(self.models_manager.as_ref(), kind)
+            }
+            _ => collaboration_modes::mask_for_kind(self.models_manager.as_ref(), kind),
+        }
+    }
+
+    fn run_gsd_workflow_command(&mut self, workflow: GsdWorkflowCommand, args: String) {
+        if let Some(mode) = workflow.preferred_mode()
+            && self.collaboration_modes_enabled()
+            && let Some(mask) = self.collaboration_mask_for_kind(mode)
+        {
+            self.set_collaboration_mask(mask);
+        }
+        let prompt = codex_core::gsd::render_workflow_prompt(workflow, &args);
+        self.submit_user_message(prompt.into());
+    }
+
+    fn has_gsd_project_state(&self) -> bool {
+        self.config.cwd.join(GSD_PROJECT_PATH).exists()
+    }
+
+    fn open_plan_hub(&mut self) {
+        if !self.collaboration_modes_enabled() {
+            self.add_info_message(
+                "Collaboration modes are disabled.".to_string(),
+                Some("Enable collaboration modes to use /plan.".to_string()),
+            );
+            return;
+        }
+
+        let Some(project_mask) = collaboration_modes::plan_mask(self.models_manager.as_ref())
+        else {
+            self.add_info_message("Plan mode unavailable right now.".to_string(), None);
+            return;
+        };
+        let Some(conversation_mask) = self.collaboration_mask_for_kind(ModeKind::ConversationPlan)
+        else {
+            self.add_info_message(
+                "Conversation planning unavailable right now.".to_string(),
+                None,
+            );
+            return;
+        };
+
+        let has_state = self.has_gsd_project_state();
+        let project_workflow = if has_state {
+            GsdWorkflowCommand::Progress
+        } else {
+            GsdWorkflowCommand::NewProject
+        };
+        let project_prompt = codex_core::gsd::render_workflow_prompt(project_workflow, "");
+        let project_mask_for_action = project_mask.clone();
+        let conversation_mask_for_action = conversation_mask.clone();
+
+        let items = vec![
+            SelectionItem {
+                name: "Project planning".to_string(),
+                description: Some(if has_state {
+                    "Resume GSD planning from the existing `.planning/` state.".to_string()
+                } else {
+                    "Start a fresh GSD project planning flow in `.planning/`.".to_string()
+                }),
+                is_default: true,
+                actions: vec![Box::new(move |tx| {
+                    tx.send(AppEvent::SubmitUserMessageWithMode {
+                        text: project_prompt.clone(),
+                        collaboration_mode: project_mask_for_action.clone(),
+                    });
+                })],
+                dismiss_on_select: true,
+                ..Default::default()
+            },
+            SelectionItem {
+                name: "Conversation planning".to_string(),
+                description: Some(
+                    "Stay in a chat-first planning mode without forcing `.planning/` workflow state."
+                        .to_string(),
+                ),
+                actions: vec![Box::new(move |tx| {
+                    tx.send(AppEvent::UpdateCollaborationMode(
+                        conversation_mask_for_action.clone(),
+                    ));
+                })],
+                dismiss_on_select: true,
+                ..Default::default()
+            },
+        ];
+
+        self.show_selection_view(SelectionViewParams {
+            title: Some("Planning Hub".to_string()),
+            subtitle: Some("Choose how `/plan` should behave for this session.".to_string()),
+            footer_hint: Some(standard_popup_hint_line()),
+            items,
+            ..Default::default()
+        });
     }
 
     fn show_rename_prompt(&mut self) {
@@ -5972,7 +6149,7 @@ impl ChatWidget {
             return None;
         }
         match self.active_mode_kind() {
-            ModeKind::Plan => Some(CollaborationModeIndicator::Plan),
+            ModeKind::Plan | ModeKind::ConversationPlan => Some(CollaborationModeIndicator::Plan),
             ModeKind::Default | ModeKind::PairProgramming | ModeKind::Execute => None,
         }
     }

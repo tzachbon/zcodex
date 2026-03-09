@@ -3,6 +3,7 @@ use crate::config::edit::ConfigEdit;
 use crate::config::edit::ConfigEditsBuilder;
 use crate::config::types::DEFAULT_OTEL_ENVIRONMENT;
 use crate::config::types::History;
+use crate::config::types::HooksConfig;
 use crate::config::types::McpServerConfig;
 use crate::config::types::McpServerDisabledReason;
 use crate::config::types::McpServerTransportConfig;
@@ -199,6 +200,9 @@ pub struct Config {
     ///
     /// If unset the feature is disabled.
     pub notify: Option<Vec<String>>,
+
+    /// Generic lifecycle hooks configured from `config.toml`.
+    pub hooks: HooksConfig,
 
     /// TUI notifications preference. When set, the TUI will send terminal notifications on
     /// approvals and turn completions when not focused.
@@ -828,6 +832,10 @@ pub struct ConfigToml {
     /// Optional external command to spawn for end-user notifications.
     #[serde(default)]
     pub notify: Option<Vec<String>>,
+
+    /// Generic lifecycle hooks configured from `config.toml`.
+    #[serde(default)]
+    pub hooks: HooksConfig,
 
     /// System instructions.
     pub instructions: Option<String>,
@@ -1611,6 +1619,7 @@ impl Config {
             forced_auto_mode_downgraded_on_windows,
             shell_environment_policy,
             notify: cfg.notify,
+            hooks: cfg.hooks,
             user_instructions,
             base_instructions,
             personality,
@@ -1925,6 +1934,25 @@ persistence = "none"
                 max_bytes: None,
             }),
             history_no_persistence_cfg.history
+        );
+
+        let hooks_cfg = r#"
+[hooks]
+after_agent = [["echo", "agent"]]
+after_tool = [["echo", "tool"]]
+session_start = [["echo", "start"]]
+session_resume = [["echo", "resume"]]
+"#;
+        let hooks_parsed =
+            toml::from_str::<ConfigToml>(hooks_cfg).expect("hooks TOML should deserialize");
+        assert_eq!(
+            hooks_parsed.hooks,
+            HooksConfig {
+                after_agent: vec![vec!["echo".to_string(), "agent".to_string()]],
+                after_tool: vec![vec!["echo".to_string(), "tool".to_string()]],
+                session_start: vec![vec!["echo".to_string(), "start".to_string()]],
+                session_resume: vec![vec!["echo".to_string(), "resume".to_string()]],
+            }
         );
     }
 
@@ -3840,6 +3868,7 @@ model_verbosity = "high"
                 shell_environment_policy: ShellEnvironmentPolicy::default(),
                 user_instructions: None,
                 notify: None,
+                hooks: HooksConfig::default(),
                 cwd: fixture.cwd(),
                 cli_auth_credentials_store_mode: Default::default(),
                 mcp_servers: Constrained::allow_any(HashMap::new()),
@@ -3927,6 +3956,7 @@ model_verbosity = "high"
             shell_environment_policy: ShellEnvironmentPolicy::default(),
             user_instructions: None,
             notify: None,
+            hooks: HooksConfig::default(),
             cwd: fixture.cwd(),
             cli_auth_credentials_store_mode: Default::default(),
             mcp_servers: Constrained::allow_any(HashMap::new()),
@@ -4029,6 +4059,7 @@ model_verbosity = "high"
             shell_environment_policy: ShellEnvironmentPolicy::default(),
             user_instructions: None,
             notify: None,
+            hooks: HooksConfig::default(),
             cwd: fixture.cwd(),
             cli_auth_credentials_store_mode: Default::default(),
             mcp_servers: Constrained::allow_any(HashMap::new()),
@@ -4117,6 +4148,7 @@ model_verbosity = "high"
             shell_environment_policy: ShellEnvironmentPolicy::default(),
             user_instructions: None,
             notify: None,
+            hooks: HooksConfig::default(),
             cwd: fixture.cwd(),
             cli_auth_credentials_store_mode: Default::default(),
             mcp_servers: Constrained::allow_any(HashMap::new()),

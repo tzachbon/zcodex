@@ -26,6 +26,7 @@ use crate::features::Features;
 use crate::features::maybe_push_unstable_features_warning;
 use crate::hooks::HookEvent;
 use crate::hooks::HookEventAfterAgent;
+use crate::hooks::HookEventSessionLifecycle;
 use crate::hooks::Hooks;
 use crate::models_manager::manager::ModelsManager;
 use crate::parse_command::parse_command;
@@ -389,6 +390,7 @@ impl Codex {
         let (agent_status_tx, agent_status_rx) = watch::channel(AgentStatus::PendingInit);
 
         let session_init_span = info_span!("session_init");
+        let is_resume_session = matches!(&conversation_history, InitialHistory::Resumed(_));
         let session = Session::new(
             session_configuration,
             config.clone(),
@@ -410,6 +412,23 @@ impl Codex {
             map_session_init_error(&e, &config.codex_home)
         })?;
         let thread_id = session.conversation_id;
+        session
+            .hooks()
+            .dispatch(crate::hooks::HookPayload {
+                session_id: thread_id,
+                cwd: config.cwd.clone(),
+                triggered_at: chrono::Utc::now(),
+                hook_event: if is_resume_session {
+                    HookEvent::SessionResume {
+                        event: HookEventSessionLifecycle { thread_id },
+                    }
+                } else {
+                    HookEvent::SessionStart {
+                        event: HookEventSessionLifecycle { thread_id },
+                    }
+                },
+            })
+            .await;
 
         // This task will run until Op::Shutdown is received.
         let session_loop_span = info_span!("session_loop", thread_id = %thread_id);
@@ -2087,6 +2106,10 @@ impl Session {
         if let Some(developer_instructions) = turn_context.developer_instructions.as_deref() {
             items.push(DeveloperInstructions::new(developer_instructions.to_string()).into());
         }
+        items.push(
+            DeveloperInstructions::new(crate::gsd::global_developer_instructions().to_string())
+                .into(),
+        );
         // Add developer instructions from collaboration_mode if they exist and are non-empty
         let (collaboration_mode, base_instructions) = {
             let state = self.state.lock().await;

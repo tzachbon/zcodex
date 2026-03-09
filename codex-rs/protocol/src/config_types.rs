@@ -185,6 +185,11 @@ pub enum ModeKind {
     #[serde(skip_serializing, skip_deserializing)]
     #[schemars(skip)]
     #[ts(skip)]
+    ConversationPlan,
+    #[doc(hidden)]
+    #[serde(skip_serializing, skip_deserializing)]
+    #[schemars(skip)]
+    #[ts(skip)]
     PairProgramming,
     #[doc(hidden)]
     #[serde(skip_serializing, skip_deserializing)]
@@ -200,6 +205,7 @@ impl ModeKind {
         match self {
             Self::Plan => "Plan",
             Self::Default => "Default",
+            Self::ConversationPlan => "Conversation Plan",
             Self::PairProgramming => "Pair Programming",
             Self::Execute => "Execute",
         }
@@ -210,7 +216,7 @@ impl ModeKind {
     }
 
     pub const fn allows_request_user_input(self) -> bool {
-        matches!(self, Self::Plan)
+        matches!(self, Self::Plan | Self::ConversationPlan)
     }
 }
 

@@ -2557,7 +2557,7 @@ async fn collab_slash_command_opens_picker_and_updates_mode() {
 }
 
 #[tokio::test]
-async fn plan_slash_command_switches_to_plan_mode() {
+async fn plan_slash_command_opens_planning_hub() {
     let (mut chat, mut rx, _op_rx) = make_chatwidget_manual(None).await;
     chat.set_feature_enabled(Feature::CollaborationModes, true);
     let initial = chat.current_collaboration_mode().clone();
@@ -2565,12 +2565,17 @@ async fn plan_slash_command_switches_to_plan_mode() {
     chat.dispatch_command(SlashCommand::Plan);
 
     assert!(rx.try_recv().is_err(), "plan should not emit an app event");
-    assert_eq!(chat.active_collaboration_mode_kind(), ModeKind::Plan);
+    let popup = render_bottom_popup(&chat, 80);
+    assert!(
+        popup.contains("Planning Hub"),
+        "expected planning hub: {popup}"
+    );
+    assert_eq!(chat.active_collaboration_mode_kind(), ModeKind::Default);
     assert_eq!(chat.current_collaboration_mode(), &initial);
 }
 
 #[tokio::test]
-async fn plan_slash_command_with_args_submits_prompt_in_plan_mode() {
+async fn plan_phase_slash_command_with_args_submits_gsd_prompt() {
     let (mut chat, _rx, mut op_rx) = make_chatwidget_manual(None).await;
     chat.set_feature_enabled(Feature::CollaborationModes, true);
 
@@ -2595,7 +2600,7 @@ async fn plan_slash_command_with_args_submits_prompt_in_plan_mode() {
     });
 
     chat.bottom_pane
-        .set_composer_text("/plan build the plan".to_string(), Vec::new(), Vec::new());
+        .set_composer_text("/plan-phase 1".to_string(), Vec::new(), Vec::new());
     chat.handle_key_event(KeyEvent::from(KeyCode::Enter));
 
     let items = match next_submit_op(&mut op_rx) {
@@ -2603,13 +2608,16 @@ async fn plan_slash_command_with_args_submits_prompt_in_plan_mode() {
         other => panic!("expected Op::UserTurn, got {other:?}"),
     };
     assert_eq!(items.len(), 1);
-    assert_eq!(
-        items[0],
-        UserInput::Text {
-            text: "build the plan".to_string(),
-            text_elements: Vec::new(),
-        }
-    );
+    let UserInput::Text {
+        text,
+        text_elements,
+    } = &items[0]
+    else {
+        panic!("expected text user input, got {:?}", items[0]);
+    };
+    assert!(text.contains("visible_name: /plan-phase"));
+    assert!(text.contains("Inline arguments: `1`."));
+    assert_eq!(text_elements, &Vec::new());
     assert_eq!(chat.active_collaboration_mode_kind(), ModeKind::Plan);
 }
 
