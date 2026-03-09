@@ -1,8 +1,10 @@
 use std::io::ErrorKind;
+use std::io::Write;
 use std::path::Path;
 use std::process::Stdio;
 
 use codex_core::config::Config;
+use crossterm::terminal;
 use tokio::process::Command;
 
 use crate::tui;
@@ -33,22 +35,32 @@ pub(crate) async fn preview_image(
     }
 
     let command = preview_command(config);
+    let geometry = preview_geometry();
     let path = path.to_path_buf();
     tracing::debug!(
         command,
+        geometry = geometry.as_deref().unwrap_or("<auto>"),
         path = %path.display(),
         "starting terminal image preview"
     );
 
-    let status = tui
+    let status: std::io::Result<std::process::ExitStatus> = tui
         .with_restored(tui::RestoreMode::Full, || async move {
-            Command::new(command)
+            let mut process = Command::new(command);
+            if let Some(geometry) = geometry.as_deref() {
+                process.arg(geometry);
+            }
+            let status = process
                 .arg(&path)
                 .stdin(Stdio::inherit())
                 .stdout(Stdio::inherit())
                 .stderr(Stdio::inherit())
                 .status()
-                .await
+                .await?;
+            if status.success() && preview_requires_acknowledgement(command) {
+                let _ = wait_for_preview_acknowledgement().await;
+            }
+            Ok(status)
         })
         .await;
 
@@ -71,6 +83,39 @@ fn preview_command(config: &Config) -> &str {
         .unwrap_or("timg")
 }
 
+fn preview_requires_acknowledgement(command: &str) -> bool {
+    Path::new(command)
+        .file_name()
+        .and_then(|name| name.to_str())
+        == Some("timg")
+}
+
+fn preview_geometry() -> Option<String> {
+    terminal::size()
+        .ok()
+        .and_then(|(width, height)| format_preview_geometry(width, height))
+}
+
+fn format_preview_geometry(width: u16, height: u16) -> Option<String> {
+    (width > 0 && height > 0).then(|| format!("-g{width}x{height}"))
+}
+
+async fn wait_for_preview_acknowledgement() -> std::io::Result<()> {
+    tokio::task::spawn_blocking(|| {
+        let mut stderr = std::io::stderr();
+        stderr.write_all(b"\nPress Enter to return...")?;
+        stderr.flush()?;
+
+        let mut input = String::new();
+        std::io::stdin().read_line(&mut input)?;
+
+        stderr.write_all(b"\r\x1b[2K")?;
+        stderr.flush()
+    })
+    .await
+    .map_err(std::io::Error::other)?
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -88,5 +133,19 @@ mod tests {
         let mut config = ConfigBuilder::default().build().await.expect("config");
         config.tui_image_preview_command = Some("custom-timg".to_string());
         assert_eq!(preview_command(&config), "custom-timg");
+    }
+
+    #[test]
+    fn preview_geometry_formats_terminal_size() {
+        assert_eq!(Some("-g80x24".to_string()), format_preview_geometry(80, 24));
+        assert_eq!(None, format_preview_geometry(0, 24));
+        assert_eq!(None, format_preview_geometry(80, 0));
+    }
+
+    #[test]
+    fn preview_requires_acknowledgement_for_timg_only() {
+        assert!(preview_requires_acknowledgement("timg"));
+        assert!(preview_requires_acknowledgement("/usr/bin/timg"));
+        assert!(!preview_requires_acknowledgement("custom-preview"));
     }
 }
