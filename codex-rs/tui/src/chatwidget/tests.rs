@@ -937,6 +937,7 @@ async fn make_chatwidget_manual(
         last_unified_wait: None,
         unified_exec_wait_streak: None,
         task_complete_pending: false,
+        pending_post_turn_resume: None,
         unified_exec_processes: Vec::new(),
         agent_turn_running: false,
         mcp_startup_status: None,
@@ -2640,7 +2641,11 @@ async fn loop_slash_command_opens_stop_phrase_prompt() {
         rx.try_recv().is_err(),
         "loop prompt should not emit start event yet"
     );
-    assert!(!chat.bottom_pane.no_modal_or_popup_active());
+    let popup = render_bottom_popup(&chat, 80);
+    assert!(
+        popup.contains("Loop Stop Phrase"),
+        "expected loop stop phrase prompt, got {popup:?}"
+    );
 }
 
 #[tokio::test]
@@ -2653,7 +2658,12 @@ async fn loop_stop_phrase_prompt_emits_start_event() {
         .set_composer_text("/loop ship it ".to_string(), Vec::new(), Vec::new());
     chat.bottom_pane.attach_image(image_path.clone());
     chat.handle_key_event(KeyEvent::from(KeyCode::Enter));
-    chat.bottom_pane.handle_paste("ralph".to_string());
+    let popup = render_bottom_popup(&chat, 80);
+    assert!(
+        popup.contains("Loop Stop Phrase"),
+        "expected loop stop phrase prompt, got {popup:?}"
+    );
+    chat.handle_paste("ralph".to_string());
     chat.handle_key_event(KeyEvent::from(KeyCode::Enter));
 
     match rx.try_recv().expect("start loop event") {
@@ -2713,9 +2723,7 @@ async fn start_loop_submits_first_prompt_and_sets_indicator() {
     assert_eq!(
         items,
         vec![
-            UserInput::LocalImage {
-                path: image.path.clone(),
-            },
+            UserInput::LocalImage { path: image.path },
             UserInput::Text {
                 text,
                 text_elements
@@ -2732,6 +2740,76 @@ async fn start_loop_submits_first_prompt_and_sets_indicator() {
             }
         )]
     );
+}
+
+#[tokio::test]
+async fn pre_session_loop_shows_pending_indicator() {
+    let (mut chat, _rx, _op_rx) = make_chatwidget_manual(None).await;
+
+    chat.start_loop(
+        "ship it".to_string(),
+        Vec::new(),
+        Vec::new(),
+        "ralph".to_string(),
+    );
+
+    assert_eq!(
+        chat.bottom_pane.mode_indicators(),
+        &[crate::bottom_pane::FooterBadge::Loop(
+            crate::bottom_pane::LoopIndicatorState {
+                iteration: 0,
+                max_iterations: 100,
+                status: crate::bottom_pane::LoopIndicatorStatus::Pending,
+            }
+        )]
+    );
+}
+
+#[tokio::test]
+async fn first_queued_loop_submit_flips_pending_indicator_to_running() {
+    let (mut chat, _rx, mut op_rx) = make_chatwidget_manual(None).await;
+    chat.start_loop(
+        "ship it".to_string(),
+        Vec::new(),
+        Vec::new(),
+        "ralph".to_string(),
+    );
+    configure_session(&mut chat);
+
+    chat.maybe_send_next_queued_input();
+
+    let _ = next_submit_op(&mut op_rx);
+    assert_eq!(
+        chat.bottom_pane.mode_indicators(),
+        &[crate::bottom_pane::FooterBadge::Loop(
+            crate::bottom_pane::LoopIndicatorState {
+                iteration: 1,
+                max_iterations: 100,
+                status: crate::bottom_pane::LoopIndicatorStatus::Running,
+            }
+        )]
+    );
+}
+
+#[tokio::test]
+async fn pre_session_manual_submit_cancels_active_loop_before_queueing() {
+    let (mut chat, _rx, _op_rx) = make_chatwidget_manual(None).await;
+
+    chat.start_loop(
+        "ship it".to_string(),
+        Vec::new(),
+        Vec::new(),
+        "ralph".to_string(),
+    );
+    assert!(chat.active_loop.is_some());
+    assert_eq!(chat.queued_user_messages.len(), 1);
+
+    chat.submit_user_message(UserMessage::from("manual followup"));
+
+    assert!(chat.active_loop.is_none());
+    assert_eq!(chat.queued_user_messages.len(), 1);
+    assert_eq!(chat.queued_user_messages[0].text, "manual followup");
+    assert!(!chat.queued_user_messages[0].loop_pre_starter);
 }
 
 #[tokio::test]
@@ -2819,6 +2897,100 @@ async fn rate_limit_prompt_pending_suppresses_loop_followup_and_queued_submit() 
     assert!(
         popup.contains("Approaching rate limits"),
         "expected rate limit prompt, got {popup:?}"
+    );
+}
+
+#[tokio::test]
+async fn rate_limit_prompt_resume_event_continues_deferred_loop_followup() {
+    let auth = CodexAuth::create_dummy_chatgpt_auth_for_testing();
+    let (mut chat, mut rx, mut op_rx) = make_chatwidget_manual(Some("gpt-5")).await;
+    chat.auth_manager = AuthManager::from_auth_for_testing(auth);
+    configure_session(&mut chat);
+    chat.start_loop(
+        "ship it".to_string(),
+        Vec::new(),
+        Vec::new(),
+        "ralph".to_string(),
+    );
+    let _ = next_submit_op(&mut op_rx);
+    chat.on_rate_limit_snapshot(Some(snapshot(90.0)));
+
+    chat.on_task_complete(Some("still working".to_string()), false);
+    let popup = render_bottom_popup(&chat, 80);
+    assert!(popup.contains("Approaching rate limits"));
+
+    chat.handle_key_event(KeyEvent::from(KeyCode::Esc));
+
+    let mut saw_resume = false;
+    loop {
+        match rx.try_recv() {
+            Ok(AppEvent::ResumePendingPostTurnProgression) => {
+                saw_resume = true;
+                break;
+            }
+            Ok(_) => continue,
+            Err(TryRecvError::Empty) => break,
+            Err(TryRecvError::Disconnected) => panic!("app event channel closed"),
+        }
+    }
+    assert!(saw_resume, "expected deferred post-turn resume event");
+
+    chat.resume_pending_post_turn_progression();
+
+    let items = match next_submit_op(&mut op_rx) {
+        Op::UserTurn { items, .. } => items,
+        other => panic!("expected Op::UserTurn, got {other:?}"),
+    };
+    assert_eq!(
+        items,
+        vec![UserInput::Text {
+            text: "Continue the same task.\nDo not ask the user for confirmation.\nIf all requested work is fully done and resolved, reply with exactly \"ralph\".\nOtherwise continue working.".to_string(),
+            text_elements: Vec::new(),
+        }]
+    );
+}
+
+#[tokio::test]
+async fn rate_limit_prompt_resume_event_continues_deferred_queued_message() {
+    let auth = CodexAuth::create_dummy_chatgpt_auth_for_testing();
+    let (mut chat, mut rx, mut op_rx) = make_chatwidget_manual(Some("gpt-5")).await;
+    chat.auth_manager = AuthManager::from_auth_for_testing(auth);
+    configure_session(&mut chat);
+    chat.queue_user_message("queued message".into());
+    chat.on_rate_limit_snapshot(Some(snapshot(90.0)));
+
+    chat.on_task_complete(Some("still working".to_string()), false);
+    let popup = render_bottom_popup(&chat, 80);
+    assert!(popup.contains("Approaching rate limits"));
+
+    chat.handle_key_event(KeyEvent::from(KeyCode::Esc));
+
+    let mut saw_resume = false;
+    loop {
+        match rx.try_recv() {
+            Ok(AppEvent::ResumePendingPostTurnProgression) => {
+                saw_resume = true;
+                break;
+            }
+            Ok(_) => continue,
+            Err(TryRecvError::Empty) => break,
+            Err(TryRecvError::Disconnected) => panic!("app event channel closed"),
+        }
+    }
+    assert!(saw_resume, "expected deferred post-turn resume event");
+
+    chat.resume_pending_post_turn_progression();
+
+    let items = match next_submit_op(&mut op_rx) {
+        Op::UserTurn { items, .. } => items,
+        other => panic!("expected Op::UserTurn, got {other:?}"),
+    };
+    assert_eq!(
+        items,
+        vec![UserInput::Text {
+            text: "queued message".to_string(),
+            text_elements: Vec::new(),
+        }]
     );
 }
 

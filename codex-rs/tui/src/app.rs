@@ -1602,6 +1602,9 @@ impl App {
                 self.chat_widget.set_model(&model);
                 self.refresh_status_line();
             }
+            AppEvent::ResumePendingPostTurnProgression => {
+                self.chat_widget.resume_pending_post_turn_progression();
+            }
             AppEvent::UpdateCollaborationMode(mask) => {
                 self.chat_widget.set_collaboration_mask(mask);
                 self.refresh_status_line();

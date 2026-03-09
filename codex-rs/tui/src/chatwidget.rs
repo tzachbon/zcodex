@@ -271,6 +271,12 @@ struct ActiveLoopSession {
     paused: bool,
 }
 
+#[derive(Clone, Debug)]
+struct PendingPostTurnResume {
+    last_agent_message: Option<String>,
+    allow_plan_prompt: bool,
+}
+
 impl ActiveLoopSession {
     fn indicator(&self) -> LoopIndicatorState {
         LoopIndicatorState {
@@ -556,6 +562,7 @@ pub(crate) struct ChatWidget {
     last_unified_wait: Option<UnifiedExecWaitState>,
     unified_exec_wait_streak: Option<UnifiedExecWaitStreak>,
     task_complete_pending: bool,
+    pending_post_turn_resume: Option<PendingPostTurnResume>,
     unified_exec_processes: Vec<UnifiedExecProcessSummary>,
     /// Tracks whether codex-core currently considers an agent turn to be in progress.
     ///
@@ -1328,29 +1335,24 @@ impl ChatWidget {
             active_loop.awaiting_followup_submit = false;
             self.sync_footer_indicators();
         }
+        let allow_plan_prompt =
+            !from_replay && !loop_was_active && self.queued_user_messages.is_empty();
         let rate_limit_prompt_pending = matches!(
             self.rate_limit_switch_prompt,
             RateLimitSwitchPromptState::Pending
         );
-        let submitted_loop_followup = if from_replay || rate_limit_prompt_pending {
-            false
+        if rate_limit_prompt_pending {
+            self.pending_post_turn_resume = Some(PendingPostTurnResume {
+                last_agent_message: last_agent_message.clone(),
+                allow_plan_prompt,
+            });
         } else {
-            self.maybe_continue_active_loop(last_agent_message.as_deref())
-        };
-        let plan_prompt_opened =
-            if !from_replay && !loop_was_active && self.queued_user_messages.is_empty() {
-                self.maybe_prompt_plan_implementation()
-            } else {
-                false
-            };
+            self.run_post_turn_progression(last_agent_message.as_deref(), allow_plan_prompt);
+        }
         // Keep this flag for replayed completion events so a subsequent live TurnComplete can
         // still show the prompt once after thread switch replay.
         if !from_replay {
             self.saw_plan_item_this_turn = false;
-        }
-        if !submitted_loop_followup && !plan_prompt_opened && !rate_limit_prompt_pending {
-            // If there is a queued user message, send exactly one now to begin the next turn.
-            self.maybe_send_next_queued_input();
         }
         // Emit a notification when the turn completes (suppressed if focused).
         self.notify(Notification::AgentTurnComplete {
@@ -1358,6 +1360,54 @@ impl ChatWidget {
         });
 
         self.maybe_show_pending_rate_limit_prompt();
+        if matches!(
+            self.rate_limit_switch_prompt,
+            RateLimitSwitchPromptState::Idle
+        ) {
+            self.resume_pending_post_turn_progression();
+        }
+    }
+
+    fn run_post_turn_progression(
+        &mut self,
+        last_agent_message: Option<&str>,
+        allow_plan_prompt: bool,
+    ) {
+        let submitted_loop_followup = self.maybe_continue_active_loop(last_agent_message);
+        let plan_prompt_opened = if submitted_loop_followup || !allow_plan_prompt {
+            false
+        } else {
+            self.maybe_prompt_plan_implementation()
+        };
+        if !submitted_loop_followup
+            && !plan_prompt_opened
+            && self.bottom_pane.no_modal_or_popup_active()
+        {
+            self.maybe_send_next_queued_input();
+        }
+    }
+
+    pub(crate) fn resume_pending_post_turn_progression(&mut self) {
+        let Some(PendingPostTurnResume {
+            last_agent_message,
+            allow_plan_prompt,
+        }) = self.pending_post_turn_resume.take()
+        else {
+            return;
+        };
+        if matches!(
+            self.rate_limit_switch_prompt,
+            RateLimitSwitchPromptState::Pending
+        ) || !self.bottom_pane.no_modal_or_popup_active()
+        {
+            self.pending_post_turn_resume = Some(PendingPostTurnResume {
+                last_agent_message,
+                allow_plan_prompt,
+            });
+            return;
+        }
+        self.rate_limit_switch_prompt = RateLimitSwitchPromptState::Idle;
+        self.run_post_turn_progression(last_agent_message.as_deref(), allow_plan_prompt);
     }
 
     fn maybe_prompt_plan_implementation(&mut self) -> bool {
@@ -2628,6 +2678,7 @@ impl ChatWidget {
             last_unified_wait: None,
             unified_exec_wait_streak: None,
             task_complete_pending: false,
+            pending_post_turn_resume: None,
             unified_exec_processes: Vec::new(),
             agent_turn_running: false,
             mcp_startup_status: None,
@@ -2808,6 +2859,7 @@ impl ChatWidget {
             plan_item_active: false,
             queued_user_messages: VecDeque::new(),
             active_loop: None,
+            pending_post_turn_resume: None,
             show_welcome_banner: is_first_run,
             suppress_session_configured_redraw: false,
             pending_notification: None,
@@ -2941,6 +2993,7 @@ impl ChatWidget {
             last_unified_wait: None,
             unified_exec_wait_streak: None,
             task_complete_pending: false,
+            pending_post_turn_resume: None,
             unified_exec_processes: Vec::new(),
             agent_turn_running: false,
             mcp_startup_status: None,
@@ -3152,6 +3205,16 @@ impl ChatWidget {
                 }
                 InputResult::None => {}
             },
+        }
+        if matches!(
+            self.rate_limit_switch_prompt,
+            RateLimitSwitchPromptState::Shown
+        ) && self.bottom_pane.no_modal_or_popup_active()
+            && self.pending_post_turn_resume.is_some()
+        {
+            self.rate_limit_switch_prompt = RateLimitSwitchPromptState::Idle;
+            self.app_event_tx
+                .send(AppEvent::ResumePendingPostTurnProgression);
         }
     }
 
@@ -3754,7 +3817,7 @@ impl ChatWidget {
                     max_duration_secs: DEFAULT_LOOP_MAX_DURATION_SECS,
                 },
                 started_at: chrono::Utc::now().timestamp(),
-                iteration: 1,
+                iteration: 0,
                 initial_prompt: prompt.clone(),
             },
             started_at: Instant::now(),
@@ -3823,23 +3886,31 @@ impl ChatWidget {
         user_message: UserMessage,
         loop_submission: bool,
     ) {
+        if !loop_submission {
+            self.replace_active_loop(LoopStopReason::Cancelled, true);
+        }
         if !self.is_session_configured() {
             tracing::warn!("cannot submit user message before session is configured; queueing");
             self.queued_user_messages.push_front(user_message);
             self.refresh_queued_user_messages();
             return;
         }
-        if !loop_submission {
-            self.replace_active_loop(LoopStopReason::Cancelled, true);
-        }
-
         let UserMessage {
             text,
             local_images,
             text_elements,
             mention_paths,
-            loop_pre_starter: _loop_pre_starter,
+            loop_pre_starter,
         } = user_message;
+        if loop_submission
+            && loop_pre_starter
+            && let Some(active_loop) = self.active_loop.as_mut()
+        {
+            active_loop.state.iteration = 1;
+            let persisted_state = active_loop.state.clone();
+            self.persist_loop_event(persisted_state, LoopPersistenceStatus::Active, None);
+            self.sync_footer_indicators();
+        }
         if text.is_empty() && local_images.is_empty() {
             return;
         }

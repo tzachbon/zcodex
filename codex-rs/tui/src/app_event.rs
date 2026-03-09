@@ -287,6 +287,9 @@ pub(crate) enum AppEvent {
         stop_phrase: String,
     },
 
+    /// Resume post-turn automation deferred by a transient popup.
+    ResumePendingPostTurnProgression,
+
     /// Open the approval popup.
     FullScreenApprovalRequest(ApprovalRequest),
 
