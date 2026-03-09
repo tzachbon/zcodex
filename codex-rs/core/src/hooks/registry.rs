@@ -171,6 +171,8 @@ mod tests {
     use super::super::types::Hook;
     use super::super::types::HookEvent;
     use super::super::types::HookEventAfterAgent;
+    use super::super::types::HookEventAfterTool;
+    use super::super::types::HookEventSessionLifecycle;
     use super::super::types::HookOutcome;
     use super::super::types::HookPayload;
     use super::Hooks;
@@ -196,6 +198,18 @@ mod tests {
                     last_assistant_message: Some("hi".to_string()),
                 },
             },
+        }
+    }
+
+    fn payload_for_event(hook_event: HookEvent) -> HookPayload {
+        HookPayload {
+            session_id: ThreadId::new(),
+            cwd: PathBuf::from(CWD),
+            triggered_at: Utc
+                .with_ymd_and_hms(2025, 1, 1, 0, 0, 0)
+                .single()
+                .expect("valid timestamp"),
+            hook_event,
         }
     }
 
@@ -298,6 +312,73 @@ mod tests {
         ]);
 
         hooks.dispatch(hook_payload("3")).await;
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
+    }
+
+    #[tokio::test]
+    async fn dispatch_routes_after_tool_hooks() {
+        let calls = Arc::new(AtomicUsize::new(0));
+        let hooks = Hooks {
+            after_agent: Vec::new(),
+            after_tool: vec![counting_hook(&calls, HookOutcome::Continue)],
+            session_start: Vec::new(),
+            session_resume: Vec::new(),
+        };
+
+        hooks
+            .dispatch(payload_for_event(HookEvent::AfterTool {
+                event: HookEventAfterTool {
+                    thread_id: ThreadId::new(),
+                    turn_id: "turn-tool".to_string(),
+                    call_id: "call-1".to_string(),
+                    tool_name: "shell".to_string(),
+                    success: true,
+                },
+            }))
+            .await;
+
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
+    }
+
+    #[tokio::test]
+    async fn dispatch_routes_session_start_hooks() {
+        let calls = Arc::new(AtomicUsize::new(0));
+        let hooks = Hooks {
+            after_agent: Vec::new(),
+            after_tool: Vec::new(),
+            session_start: vec![counting_hook(&calls, HookOutcome::Continue)],
+            session_resume: Vec::new(),
+        };
+
+        hooks
+            .dispatch(payload_for_event(HookEvent::SessionStart {
+                event: HookEventSessionLifecycle {
+                    thread_id: ThreadId::new(),
+                },
+            }))
+            .await;
+
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
+    }
+
+    #[tokio::test]
+    async fn dispatch_routes_session_resume_hooks() {
+        let calls = Arc::new(AtomicUsize::new(0));
+        let hooks = Hooks {
+            after_agent: Vec::new(),
+            after_tool: Vec::new(),
+            session_start: Vec::new(),
+            session_resume: vec![counting_hook(&calls, HookOutcome::Continue)],
+        };
+
+        hooks
+            .dispatch(payload_for_event(HookEvent::SessionResume {
+                event: HookEventSessionLifecycle {
+                    thread_id: ThreadId::new(),
+                },
+            }))
+            .await;
+
         assert_eq!(calls.load(Ordering::SeqCst), 1);
     }
 

@@ -1322,12 +1322,14 @@ async fn plan_implementation_popup_yes_emits_submit_message_event() {
     let AppEvent::SubmitUserMessageWithMode {
         text,
         collaboration_mode,
+        cwd,
     } = event
     else {
         panic!("expected SubmitUserMessageWithMode, got {event:?}");
     };
     assert_eq!(text, PLAN_IMPLEMENTATION_CODING_MESSAGE);
     assert_eq!(collaboration_mode.mode, Some(ModeKind::Default));
+    assert_eq!(cwd, chat.config.cwd);
 }
 
 #[tokio::test]
@@ -1338,10 +1340,16 @@ async fn submit_user_message_with_mode_sets_coding_collaboration_mode() {
 
     let default_mode = collaboration_modes::default_mode_mask(chat.models_manager.as_ref())
         .expect("expected default collaboration mode");
-    chat.submit_user_message_with_mode("Implement the plan.".to_string(), default_mode);
+    let submit_cwd = chat.config.cwd.join("subdir");
+    chat.submit_user_message_with_mode(
+        "Implement the plan.".to_string(),
+        default_mode,
+        submit_cwd.clone(),
+    );
 
     match next_submit_op(&mut op_rx) {
         Op::UserTurn {
+            cwd,
             collaboration_mode:
                 Some(CollaborationMode {
                     mode: ModeKind::Default,
@@ -1349,7 +1357,7 @@ async fn submit_user_message_with_mode_sets_coding_collaboration_mode() {
                 }),
             personality: None,
             ..
-        } => {}
+        } => assert_eq!(cwd, submit_cwd),
         other => {
             panic!("expected Op::UserTurn with default collab mode, got {other:?}")
         }

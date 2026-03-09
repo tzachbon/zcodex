@@ -449,11 +449,13 @@ fn sanitize_args_for_prompt(args: &str) -> SanitizedArgs {
 }
 
 fn map_sanitized_offset(boundary_map: &[(usize, usize)], offset: usize) -> usize {
-    boundary_map
-        .iter()
-        .find(|(source, _)| *source == offset)
-        .map(|(_, target)| *target)
-        .unwrap_or(offset)
+    let idx = boundary_map.partition_point(|(source, _)| *source <= offset);
+    if idx == 0 {
+        offset
+    } else {
+        let (source, target) = boundary_map[idx - 1];
+        target + (offset - source)
+    }
 }
 
 #[cfg(test)]

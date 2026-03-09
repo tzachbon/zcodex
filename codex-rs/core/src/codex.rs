@@ -5114,7 +5114,7 @@ mod tests {
         assert_eq!(expected, history_before_seed.raw_items());
 
         session.seed_initial_context_if_needed(&turn_context).await;
-        expected.extend(session.build_initial_context(&turn_context).await);
+        expected.extend(session.build_live_initial_context(&turn_context).await);
         let history_after_seed = session.clone_history().await;
         assert_eq!(expected, history_after_seed.raw_items());
 
@@ -5249,7 +5249,7 @@ mod tests {
             .record_initial_history(InitialHistory::Forked(rollout_items))
             .await;
 
-        expected.extend(session.build_initial_context(&turn_context).await);
+        expected.extend(session.build_live_initial_context(&turn_context).await);
         let history = session.state.lock().await.clone_history();
         assert_eq!(expected, history.raw_items());
     }

@@ -275,6 +275,7 @@ pub(crate) enum AppEvent {
     SubmitUserMessageWithMode {
         text: String,
         collaboration_mode: CollaborationModeMask,
+        cwd: PathBuf,
     },
 
     /// Open the approval popup.

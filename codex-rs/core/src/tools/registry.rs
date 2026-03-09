@@ -248,6 +248,7 @@ impl ToolRegistry {
             None => {
                 let message =
                     unsupported_tool_call_message(&invocation.payload, tool_name.as_ref());
+                let error = FunctionCallError::RespondToModel(message.clone());
                 otel.tool_result_with_tags(
                     tool_name.as_ref(),
                     &call_id_owned,
@@ -257,12 +258,21 @@ impl ToolRegistry {
                     &message,
                     &metric_tags,
                 );
-                return Err(FunctionCallError::RespondToModel(message));
+                dispatch_after_tool_hook(
+                    hook_session.as_ref(),
+                    hook_turn.as_ref(),
+                    &tool_name,
+                    &call_id_owned,
+                    &tool_output_for_error(&error),
+                )
+                .await;
+                return Err(error);
             }
         };
 
         if !handler.matches_kind(&invocation.payload) {
             let message = format!("tool {tool_name} invoked with incompatible payload");
+            let error = FunctionCallError::Fatal(message.clone());
             otel.tool_result_with_tags(
                 tool_name.as_ref(),
                 &call_id_owned,
@@ -272,7 +282,15 @@ impl ToolRegistry {
                 &message,
                 &metric_tags,
             );
-            return Err(FunctionCallError::Fatal(message));
+            dispatch_after_tool_hook(
+                hook_session.as_ref(),
+                hook_turn.as_ref(),
+                &tool_name,
+                &call_id_owned,
+                &tool_output_for_error(&error),
+            )
+            .await;
+            return Err(error);
         }
 
         // If interceptors are registered for this tool, compose them; otherwise call handler.

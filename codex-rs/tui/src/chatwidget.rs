@@ -1323,10 +1323,12 @@ impl ChatWidget {
         let (implement_actions, implement_disabled_reason) = match default_mask {
             Some(mask) => {
                 let user_text = PLAN_IMPLEMENTATION_CODING_MESSAGE.to_string();
+                let cwd = self.submission_cwd(None);
                 let actions: Vec<SelectionAction> = vec![Box::new(move |tx| {
                     tx.send(AppEvent::SubmitUserMessageWithMode {
                         text: user_text.clone(),
                         collaboration_mode: mask.clone(),
+                        cwd: cwd.clone(),
                     });
                 })];
                 (actions, None)
@@ -3533,6 +3535,19 @@ impl ChatWidget {
             .exists()
     }
 
+    fn submission_cwd(&self, cwd_override: Option<&PathBuf>) -> PathBuf {
+        cwd_override
+            .filter(|cwd| !cwd.as_os_str().is_empty())
+            .cloned()
+            .or_else(|| {
+                self.current_cwd
+                    .as_ref()
+                    .filter(|cwd| !cwd.as_os_str().is_empty())
+                    .cloned()
+            })
+            .unwrap_or_else(|| self.config.cwd.clone())
+    }
+
     fn open_plan_hub(&mut self) {
         if !self.collaboration_modes_enabled() {
             self.add_info_message(
@@ -3565,6 +3580,7 @@ impl ChatWidget {
         let project_prompt = codex_core::gsd::render_workflow_prompt(project_workflow, "");
         let project_mask_for_action = project_mask.clone();
         let conversation_mask_for_action = conversation_mask.clone();
+        let project_cwd = self.submission_cwd(None);
 
         let items = vec![
             SelectionItem {
@@ -3579,6 +3595,7 @@ impl ChatWidget {
                     tx.send(AppEvent::SubmitUserMessageWithMode {
                         text: project_prompt.clone(),
                         collaboration_mode: project_mask_for_action.clone(),
+                        cwd: project_cwd.clone(),
                     });
                 })],
                 dismiss_on_select: true,
@@ -3707,7 +3724,11 @@ impl ChatWidget {
         }
     }
 
-    fn submit_user_message(&mut self, user_message: UserMessage) {
+    fn submit_user_message_impl(
+        &mut self,
+        user_message: UserMessage,
+        cwd_override: Option<PathBuf>,
+    ) {
         if !self.is_session_configured() {
             tracing::warn!("cannot submit user message before session is configured; queueing");
             self.queued_user_messages.push_front(user_message);
@@ -3805,7 +3826,7 @@ impl ChatWidget {
             .filter(|_| self.current_model_supports_personality());
         let op = Op::UserTurn {
             items,
-            cwd: self.config.cwd.clone(),
+            cwd: self.submission_cwd(cwd_override.as_ref()),
             approval_policy: self.config.approval_policy.value(),
             sandbox_policy: self.config.sandbox_policy.get().clone(),
             model: effective_mode.model().to_string(),
@@ -3840,6 +3861,10 @@ impl ChatWidget {
         }
 
         self.needs_final_message_separator = false;
+    }
+
+    fn submit_user_message(&mut self, user_message: UserMessage) {
+        self.submit_user_message_impl(user_message, None);
     }
 
     /// Restore the blocked submission draft without losing mention resolution state.
@@ -6583,9 +6608,10 @@ impl ChatWidget {
         &mut self,
         text: String,
         collaboration_mode: CollaborationModeMask,
+        cwd: PathBuf,
     ) {
         self.set_collaboration_mask(collaboration_mode);
-        self.submit_user_message(text.into());
+        self.submit_user_message_impl(text.into(), Some(cwd));
     }
 
     /// True when the UI is in the regular composer state with no running task,

@@ -606,7 +606,7 @@ mod tests {
             .iter()
             .cloned()
             .map(RolloutItem::ResponseItem)
-            .take(got_items.len())
+            .take(items.len() - 2)
             .collect();
 
         assert_eq!(
