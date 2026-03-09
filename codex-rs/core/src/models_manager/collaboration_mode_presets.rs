@@ -112,4 +112,31 @@ mod tests {
         assert!(plan_instructions.contains("</raw_tui>"));
         assert!(plan_instructions.contains("<proposed_plan>"));
     }
+
+    #[test]
+    fn default_mode_instructions_document_direct_answers_for_simple_formatting() {
+        let default_instructions = default_preset()
+            .developer_instructions
+            .expect("default preset should include instructions")
+            .expect("default instructions should be set");
+
+        assert!(default_instructions.contains("can you output markdown?"));
+        assert!(default_instructions.contains("show a mermaid example"));
+        assert!(default_instructions.contains("Do not mention internal mode changes"));
+    }
+
+    #[test]
+    fn plan_mode_instructions_allow_direct_answers_for_simple_formatting() {
+        let plan_instructions = plan_preset()
+            .developer_instructions
+            .expect("plan preset should include instructions")
+            .expect("plan instructions should be set");
+
+        assert!(plan_instructions.contains("can you output markdown?"));
+        assert!(plan_instructions.contains("show a mermaid example"));
+        assert!(
+            plan_instructions
+                .contains("Do not use `request_user_input` for simple formatting demos")
+        );
+    }
 }
