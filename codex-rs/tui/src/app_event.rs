@@ -113,6 +113,10 @@ pub(crate) enum AppEvent {
 
     InsertHistoryCell(Box<dyn HistoryCell>),
 
+    PreviewImage {
+        path: PathBuf,
+    },
+
     StartCommitAnimation,
     StopCommitAnimation,
     CommitTick,

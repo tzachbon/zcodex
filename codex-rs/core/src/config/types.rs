@@ -492,6 +492,16 @@ pub struct Tui {
     /// When set, the TUI renders the selected items as the status line.
     #[serde(default)]
     pub status_line: Option<Vec<String>>,
+
+    /// Enable best-effort terminal image preview via `timg`.
+    /// Defaults to `true`.
+    #[serde(default = "default_true")]
+    pub image_preview: bool,
+
+    /// Override the command used for terminal image preview.
+    /// Defaults to `timg` when unset.
+    #[serde(default)]
+    pub image_preview_command: Option<String>,
 }
 
 const fn default_true() -> bool {
