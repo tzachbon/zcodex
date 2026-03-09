@@ -471,6 +471,7 @@ async fn interrupted_turn_restores_queued_messages_with_images_and_elements() {
         }],
         text_elements: first_elements,
         mention_paths: HashMap::new(),
+        loop_pre_starter: false,
     });
     chat.queued_user_messages.push_back(UserMessage {
         text: second_text,
@@ -480,6 +481,7 @@ async fn interrupted_turn_restores_queued_messages_with_images_and_elements() {
         }],
         text_elements: second_elements,
         mention_paths: HashMap::new(),
+        loop_pre_starter: false,
     });
     chat.refresh_queued_user_messages();
 
@@ -560,6 +562,7 @@ async fn remap_placeholders_uses_attachment_labels() {
         text_elements: elements,
         local_images: attachments,
         mention_paths: HashMap::new(),
+        loop_pre_starter: false,
     };
     let mut next_label = 3usize;
     let remapped = remap_placeholders_for_message(message, &mut next_label);
@@ -621,6 +624,7 @@ async fn remap_placeholders_uses_byte_ranges_when_placeholder_missing() {
         text_elements: elements,
         local_images: attachments,
         mention_paths: HashMap::new(),
+        loop_pre_starter: false,
     };
     let mut next_label = 3usize;
     let remapped = remap_placeholders_for_message(message, &mut next_label);
@@ -993,8 +997,8 @@ fn configure_session(chat: &mut ChatWidget) {
         session_id: ThreadId::new(),
         forked_from_id: None,
         thread_name: None,
-        model: "test-model".to_string(),
-        model_provider_id: "test-provider".to_string(),
+        model: chat.current_model().to_string(),
+        model_provider_id: chat.config.model_provider_id.clone(),
         approval_policy: AskForApproval::Never,
         sandbox_policy: SandboxPolicy::ReadOnly,
         cwd: PathBuf::from("/home/user/project"),
@@ -2638,9 +2642,12 @@ async fn loop_slash_command_opens_stop_phrase_prompt() {
 #[tokio::test]
 async fn loop_stop_phrase_prompt_emits_start_event() {
     let (mut chat, mut rx, _op_rx) = make_chatwidget_manual(None).await;
+    let placeholder = "[Image #1]";
+    let image_path = PathBuf::from("/tmp/loop.png");
 
     chat.bottom_pane
-        .set_composer_text("/loop ship it".to_string(), Vec::new(), Vec::new());
+        .set_composer_text("/loop ship it ".to_string(), Vec::new(), Vec::new());
+    chat.bottom_pane.attach_image(image_path.clone());
     chat.handle_key_event(KeyEvent::from(KeyCode::Enter));
     chat.bottom_pane.handle_paste("ralph".to_string());
     chat.handle_key_event(KeyEvent::from(KeyCode::Enter));
@@ -2652,9 +2659,21 @@ async fn loop_stop_phrase_prompt_emits_start_event() {
             local_images,
             stop_phrase,
         } => {
-            assert_eq!(prompt, "ship it");
-            assert_eq!(text_elements, Vec::new());
-            assert_eq!(local_images, Vec::new());
+            assert_eq!(prompt, format!("ship it {placeholder}"));
+            assert_eq!(
+                text_elements,
+                vec![TextElement::new(
+                    (8..8 + placeholder.len()).into(),
+                    Some(placeholder.to_string()),
+                )]
+            );
+            assert_eq!(
+                local_images,
+                vec![LocalImageAttachment {
+                    placeholder: placeholder.to_string(),
+                    path: image_path,
+                }]
+            );
             assert_eq!(stop_phrase, "ralph");
         }
         other => panic!("expected StartLoop event, got {other:?}"),
@@ -2665,11 +2684,21 @@ async fn loop_stop_phrase_prompt_emits_start_event() {
 async fn start_loop_submits_first_prompt_and_sets_indicator() {
     let (mut chat, _rx, mut op_rx) = make_chatwidget_manual(None).await;
     configure_session(&mut chat);
+    let placeholder = "[Image #1]";
+    let image = LocalImageAttachment {
+        placeholder: placeholder.to_string(),
+        path: PathBuf::from("/tmp/loop-start.png"),
+    };
+    let text = format!("ship it {placeholder}");
+    let text_elements = vec![TextElement::new(
+        (8..8 + placeholder.len()).into(),
+        Some(placeholder.to_string()),
+    )];
 
     chat.start_loop(
-        "ship it".to_string(),
-        Vec::new(),
-        Vec::new(),
+        text.clone(),
+        text_elements.clone(),
+        vec![image.clone()],
         "ralph".to_string(),
     );
 
@@ -2679,10 +2708,15 @@ async fn start_loop_submits_first_prompt_and_sets_indicator() {
     };
     assert_eq!(
         items,
-        vec![UserInput::Text {
-            text: "ship it".to_string(),
-            text_elements: Vec::new(),
-        }]
+        vec![
+            UserInput::LocalImage {
+                path: image.path.clone(),
+            },
+            UserInput::Text {
+                text,
+                text_elements
+            }
+        ]
     );
     assert_eq!(
         chat.bottom_pane.mode_indicators(),
@@ -2728,7 +2762,64 @@ async fn loop_turn_complete_auto_submits_continuation() {
 }
 
 #[tokio::test]
-async fn loop_turn_complete_skips_followup_when_plan_prompt_opens() {
+async fn cancelled_loop_drops_queued_pre_session_starter() {
+    let (mut chat, _rx, _op_rx) = make_chatwidget_manual(None).await;
+
+    chat.start_loop(
+        "ship it".to_string(),
+        Vec::new(),
+        Vec::new(),
+        "ralph".to_string(),
+    );
+    assert_eq!(chat.queued_user_messages.len(), 1);
+
+    chat.cancel_loop_for_manual_action();
+
+    assert!(chat.queued_user_messages.is_empty());
+}
+
+#[tokio::test]
+async fn rate_limit_prompt_pending_suppresses_loop_followup_and_queued_submit() {
+    let auth = CodexAuth::create_dummy_chatgpt_auth_for_testing();
+    let (mut chat, _rx, mut op_rx) = make_chatwidget_manual(Some("gpt-5")).await;
+    chat.auth_manager = AuthManager::from_auth_for_testing(auth);
+    configure_session(&mut chat);
+    chat.start_loop(
+        "ship it".to_string(),
+        Vec::new(),
+        Vec::new(),
+        "ralph".to_string(),
+    );
+    let _ = next_submit_op(&mut op_rx);
+
+    chat.bottom_pane.set_task_running(true);
+    chat.queue_user_message("queued message".into());
+    chat.on_rate_limit_snapshot(Some(snapshot(90.0)));
+    assert!(matches!(
+        chat.rate_limit_switch_prompt,
+        RateLimitSwitchPromptState::Pending
+    ));
+
+    chat.on_task_complete(Some("still working".to_string()), false);
+
+    loop {
+        match op_rx.try_recv() {
+            Ok(Op::UserTurn { .. }) => panic!("unexpected submit while rate limit prompt pending"),
+            Ok(_) => continue,
+            Err(TryRecvError::Empty) => break,
+            Err(TryRecvError::Disconnected) => panic!("op channel closed"),
+        }
+    }
+    assert!(chat.active_loop.is_some());
+    let popup = render_bottom_popup(&chat, 80);
+    assert!(
+        popup.contains("Approaching rate limits"),
+        "expected rate limit prompt, got {popup:?}"
+    );
+}
+
+#[tokio::test]
+async fn loop_turn_complete_continues_without_plan_prompt_when_loop_active() {
     let (mut chat, _rx, mut op_rx) = make_chatwidget_manual(Some("gpt-5")).await;
     configure_session(&mut chat);
     chat.set_feature_enabled(Feature::CollaborationModes, true);
@@ -2749,19 +2840,22 @@ async fn loop_turn_complete_skips_followup_when_plan_prompt_opens() {
     chat.on_plan_item_completed("- Step 1\n- Step 2\n".to_string());
     chat.on_task_complete(Some("still working".to_string()), false);
 
-    loop {
-        match op_rx.try_recv() {
-            Ok(Op::UserTurn { .. }) => panic!("unexpected loop followup while plan prompt open"),
-            Ok(_) => continue,
-            Err(TryRecvError::Empty) => break,
-            Err(TryRecvError::Disconnected) => panic!("op channel closed"),
-        }
-    }
+    let items = match next_submit_op(&mut op_rx) {
+        Op::UserTurn { items, .. } => items,
+        other => panic!("expected Op::UserTurn, got {other:?}"),
+    };
+    assert_eq!(
+        items,
+        vec![UserInput::Text {
+            text: "Continue the same task.\nDo not ask the user for confirmation.\nIf all requested work is fully done and resolved, reply with exactly \"ralph\".\nOtherwise continue working.".to_string(),
+            text_elements: Vec::new(),
+        }]
+    );
 
     let popup = render_bottom_popup(&chat, 80);
     assert!(
-        popup.contains(PLAN_IMPLEMENTATION_TITLE),
-        "expected plan implementation prompt, got {popup:?}"
+        !popup.contains(PLAN_IMPLEMENTATION_TITLE),
+        "expected no plan implementation prompt while loop active, got {popup:?}"
     );
 }
 

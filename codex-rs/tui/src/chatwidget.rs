@@ -670,6 +670,7 @@ pub(crate) struct UserMessage {
     local_images: Vec<LocalImageAttachment>,
     text_elements: Vec<TextElement>,
     mention_paths: HashMap<String, String>,
+    loop_pre_starter: bool,
 }
 
 impl From<String> for UserMessage {
@@ -680,6 +681,7 @@ impl From<String> for UserMessage {
             // Plain text conversion has no UI element ranges.
             text_elements: Vec::new(),
             mention_paths: HashMap::new(),
+            loop_pre_starter: false,
         }
     }
 }
@@ -692,6 +694,7 @@ impl From<&str> for UserMessage {
             // Plain text conversion has no UI element ranges.
             text_elements: Vec::new(),
             mention_paths: HashMap::new(),
+            loop_pre_starter: false,
         }
     }
 }
@@ -718,6 +721,7 @@ pub(crate) fn create_initial_user_message(
             local_images,
             text_elements,
             mention_paths: HashMap::new(),
+            loop_pre_starter: false,
         })
     }
 }
@@ -732,6 +736,7 @@ fn remap_placeholders_for_message(message: UserMessage, next_label: &mut usize) 
         text_elements,
         local_images,
         mention_paths,
+        loop_pre_starter,
     } = message;
     if local_images.is_empty() {
         return UserMessage {
@@ -739,6 +744,7 @@ fn remap_placeholders_for_message(message: UserMessage, next_label: &mut usize) 
             text_elements,
             local_images,
             mention_paths,
+            loop_pre_starter,
         };
     }
 
@@ -794,6 +800,7 @@ fn remap_placeholders_for_message(message: UserMessage, next_label: &mut usize) 
         local_images: remapped_images,
         text_elements: rebuilt_elements,
         mention_paths,
+        loop_pre_starter,
     }
 }
 
@@ -1316,12 +1323,17 @@ impl ChatWidget {
             active_loop.awaiting_followup_submit = false;
             self.sync_footer_indicators();
         }
-        let submitted_loop_followup = if from_replay || plan_prompt_opened {
-            false
-        } else {
-            self.maybe_continue_active_loop(last_agent_message.as_deref())
-        };
-        if !submitted_loop_followup && !plan_prompt_opened {
+        let rate_limit_prompt_pending = matches!(
+            self.rate_limit_switch_prompt,
+            RateLimitSwitchPromptState::Pending
+        );
+        let submitted_loop_followup =
+            if from_replay || plan_prompt_opened || rate_limit_prompt_pending {
+                false
+            } else {
+                self.maybe_continue_active_loop(last_agent_message.as_deref())
+            };
+        if !submitted_loop_followup && !plan_prompt_opened && !rate_limit_prompt_pending {
             // If there is a queued user message, send exactly one now to begin the next turn.
             self.maybe_send_next_queued_input();
         }
@@ -1335,6 +1347,9 @@ impl ChatWidget {
 
     fn maybe_prompt_plan_implementation(&mut self) -> bool {
         if !self.collaboration_modes_enabled() {
+            return false;
+        }
+        if self.active_loop.is_some() {
             return false;
         }
         if !self.queued_user_messages.is_empty() {
@@ -1725,6 +1740,7 @@ impl ChatWidget {
             text_elements: self.bottom_pane.composer_text_elements(),
             local_images: self.bottom_pane.composer_local_images(),
             mention_paths: HashMap::new(),
+            loop_pre_starter: false,
         };
 
         let mut to_merge: Vec<UserMessage> = self.queued_user_messages.drain(..).collect();
@@ -1737,6 +1753,7 @@ impl ChatWidget {
             text_elements: Vec::new(),
             local_images: Vec::new(),
             mention_paths: HashMap::new(),
+            loop_pre_starter: false,
         };
         let mut combined_offset = 0usize;
         let mut next_image_label = 1usize;
@@ -3075,6 +3092,7 @@ impl ChatWidget {
                             .take_recent_submission_images_with_placeholders(),
                         text_elements,
                         mention_paths: self.bottom_pane.take_mention_paths(),
+                        loop_pre_starter: false,
                     };
                     if self.is_session_configured() {
                         // Submitted is only emitted when steer is enabled (Enter sends immediately).
@@ -3099,6 +3117,7 @@ impl ChatWidget {
                             .take_recent_submission_images_with_placeholders(),
                         text_elements,
                         mention_paths: self.bottom_pane.take_mention_paths(),
+                        loop_pre_starter: false,
                     };
                     self.queue_user_message(user_message);
                 }
@@ -3479,6 +3498,7 @@ impl ChatWidget {
                         .take_recent_submission_images_with_placeholders(),
                     text_elements: prepared_elements,
                     mention_paths: self.bottom_pane.take_mention_paths(),
+                    loop_pre_starter: false,
                 };
                 if self.is_session_configured() {
                     self.reasoning_buffer.clear();
@@ -3678,6 +3698,7 @@ impl ChatWidget {
             local_images,
             text_elements,
             mention_paths,
+            loop_pre_starter: true,
         };
         if self.is_session_configured() {
             self.reasoning_buffer.clear();
@@ -3714,6 +3735,7 @@ impl ChatWidget {
             local_images,
             text_elements,
             mention_paths,
+            loop_pre_starter: _loop_pre_starter,
         } = user_message;
         if text.is_empty() && local_images.is_empty() {
             return;
@@ -3863,6 +3885,9 @@ impl ChatWidget {
         if self.active_loop.take().is_none() {
             return;
         }
+        self.queued_user_messages
+            .retain(|message| !message.loop_pre_starter);
+        self.refresh_queued_user_messages();
         self.sync_footer_indicators();
         if notify {
             self.add_info_message(Self::loop_stop_message(reason), None);
@@ -4239,10 +4264,7 @@ impl ChatWidget {
             return;
         }
         if let Some(user_message) = self.queued_user_messages.pop_front() {
-            let loop_submission = self.active_loop.as_ref().is_some_and(|active_loop| {
-                active_loop.state.iteration == 1
-                    && user_message.text == active_loop.state.initial_prompt
-            });
+            let loop_submission = user_message.loop_pre_starter;
             self.submit_user_message_with_loop_submission(user_message, loop_submission);
         }
         // Update the list to reflect the remaining queued messages (if any).
