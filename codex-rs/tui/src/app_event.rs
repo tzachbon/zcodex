@@ -19,6 +19,7 @@ use codex_protocol::ThreadId;
 use codex_protocol::openai_models::ModelPreset;
 
 use crate::bottom_pane::ApprovalRequest;
+use crate::bottom_pane::LocalImageAttachment;
 use crate::bottom_pane::StatusLineItem;
 use crate::history_cell::HistoryCell;
 
@@ -282,6 +283,7 @@ pub(crate) enum AppEvent {
     StartLoop {
         prompt: String,
         text_elements: Vec<TextElement>,
+        local_images: Vec<LocalImageAttachment>,
         stop_phrase: String,
     },
 

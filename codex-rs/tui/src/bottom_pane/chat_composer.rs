@@ -447,19 +447,36 @@ impl ChatComposer {
         &mut self,
         indicator: Option<CollaborationModeIndicator>,
     ) {
-        self.mode_indicators
-            .retain(|badge| !matches!(badge, FooterBadge::Collaboration(_)));
-        if let Some(indicator) = indicator {
-            self.mode_indicators
-                .insert(0, FooterBadge::Collaboration(indicator));
-        }
+        self.replace_mode_indicator(
+            |badge| matches!(badge, FooterBadge::Collaboration(_)),
+            indicator.map(FooterBadge::Collaboration),
+            true,
+        );
     }
 
     pub fn set_loop_indicator(&mut self, indicator: Option<LoopIndicatorState>) {
-        self.mode_indicators
-            .retain(|badge| !matches!(badge, FooterBadge::Loop(_)));
-        if let Some(indicator) = indicator {
-            self.mode_indicators.push(FooterBadge::Loop(indicator));
+        self.replace_mode_indicator(
+            |badge| matches!(badge, FooterBadge::Loop(_)),
+            indicator.map(FooterBadge::Loop),
+            false,
+        );
+    }
+
+    fn replace_mode_indicator<F>(
+        &mut self,
+        predicate: F,
+        badge: Option<FooterBadge>,
+        insert_front: bool,
+    ) where
+        F: Fn(&FooterBadge) -> bool,
+    {
+        self.mode_indicators.retain(|existing| !predicate(existing));
+        if let Some(badge) = badge {
+            if insert_front {
+                self.mode_indicators.insert(0, badge);
+            } else {
+                self.mode_indicators.push(badge);
+            }
         }
     }
 

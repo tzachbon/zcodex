@@ -1054,17 +1054,20 @@ mod tests {
         terminal: &mut Terminal<B>,
         height: u16,
         props: &FooterProps,
-        collaboration_mode_indicator: Option<CollaborationModeIndicator>,
+        mode_indicators: Option<Vec<FooterBadge>>,
     ) {
         let mut props = props.clone();
-        props.mode_indicators = collaboration_mode_indicator
-            .map(|indicator| vec![FooterBadge::Collaboration(indicator)])
-            .unwrap_or_default();
+        if let Some(mode_indicators) = mode_indicators {
+            props.mode_indicators = mode_indicators;
+        }
         terminal
             .draw(|f| {
                 let area = Rect::new(0, 0, f.area().width, height);
-                let show_cycle_hint =
-                    !props.is_task_running && collaboration_mode_indicator.is_some();
+                let show_cycle_hint = !props.is_task_running
+                    && props
+                        .mode_indicators
+                        .iter()
+                        .any(|badge| matches!(badge, FooterBadge::Collaboration(_)));
                 let show_shortcuts_hint = match props.mode {
                     FooterMode::ComposerEmpty => true,
                     FooterMode::QuitShortcutReminder
@@ -1215,7 +1218,13 @@ mod tests {
     ) {
         let height = footer_height(props).max(1);
         let mut terminal = Terminal::new(TestBackend::new(width, height)).unwrap();
-        draw_footer_frame(&mut terminal, height, props, collaboration_mode_indicator);
+        draw_footer_frame(
+            &mut terminal,
+            height,
+            props,
+            collaboration_mode_indicator
+                .map(|indicator| vec![FooterBadge::Collaboration(indicator)]),
+        );
         assert_snapshot!(name, terminal.backend());
     }
 
@@ -1224,9 +1233,22 @@ mod tests {
         props: &FooterProps,
         collaboration_mode_indicator: Option<CollaborationModeIndicator>,
     ) -> String {
+        render_footer_with_mode_indicators(
+            width,
+            props,
+            collaboration_mode_indicator
+                .map(|indicator| vec![FooterBadge::Collaboration(indicator)]),
+        )
+    }
+
+    fn render_footer_with_mode_indicators(
+        width: u16,
+        props: &FooterProps,
+        mode_indicators: Option<Vec<FooterBadge>>,
+    ) -> String {
         let height = footer_height(props).max(1);
         let mut terminal = Terminal::new(VT100Backend::new(width, height)).expect("terminal");
-        draw_footer_frame(&mut terminal, height, props, collaboration_mode_indicator);
+        draw_footer_frame(&mut terminal, height, props, mode_indicators);
         terminal.backend().vt100().screen().contents()
     }
 
@@ -1644,6 +1666,96 @@ mod tests {
             screen.contains('…'),
             "status line should be truncated with ellipsis to keep mode indicator"
         );
+    }
+
+    #[test]
+    fn footer_loop_badge_renders_pending_and_running_labels() {
+        let props = FooterProps {
+            mode: FooterMode::ComposerEmpty,
+            esc_backtrack_hint: false,
+            use_shift_enter_hint: false,
+            is_task_running: false,
+            steer_enabled: false,
+            collaboration_modes_enabled: false,
+            is_wsl: false,
+            quit_shortcut_key: key_hint::ctrl(KeyCode::Char('c')),
+            context_window_percent: None,
+            context_window_used_tokens: None,
+            mode_indicators: Vec::new(),
+            status_line_value: Some(Line::from("Status line content".to_string())),
+            status_line_enabled: true,
+        };
+
+        let pending = render_footer_with_mode_indicators(
+            120,
+            &props,
+            Some(vec![FooterBadge::Loop(LoopIndicatorState {
+                iteration: 0,
+                max_iterations: 100,
+                status: LoopIndicatorStatus::Pending,
+            })]),
+        );
+        assert!(pending.contains("Loop pending"), "footer: {pending:?}");
+
+        let running = render_footer_with_mode_indicators(
+            120,
+            &props,
+            Some(vec![FooterBadge::Loop(LoopIndicatorState {
+                iteration: 4,
+                max_iterations: 100,
+                status: LoopIndicatorStatus::Running,
+            })]),
+        );
+        assert!(running.contains("Loop 4/100"), "footer: {running:?}");
+    }
+
+    #[test]
+    fn footer_combines_collaboration_and_loop_badges() {
+        let props = FooterProps {
+            mode: FooterMode::ComposerEmpty,
+            esc_backtrack_hint: false,
+            use_shift_enter_hint: false,
+            is_task_running: false,
+            steer_enabled: false,
+            collaboration_modes_enabled: true,
+            is_wsl: false,
+            quit_shortcut_key: key_hint::ctrl(KeyCode::Char('c')),
+            context_window_percent: None,
+            context_window_used_tokens: None,
+            mode_indicators: Vec::new(),
+            status_line_value: Some(Line::from("Status line content".to_string())),
+            status_line_enabled: true,
+        };
+
+        let wide = render_footer_with_mode_indicators(
+            120,
+            &props,
+            Some(vec![
+                FooterBadge::Collaboration(CollaborationModeIndicator::Plan),
+                FooterBadge::Loop(LoopIndicatorState {
+                    iteration: 4,
+                    max_iterations: 100,
+                    status: LoopIndicatorStatus::Running,
+                }),
+            ]),
+        );
+        assert!(wide.contains("Plan mode"), "footer: {wide:?}");
+        assert!(wide.contains("Loop 4/100"), "footer: {wide:?}");
+
+        let compact = render_footer_with_mode_indicators(
+            48,
+            &props,
+            Some(vec![
+                FooterBadge::Collaboration(CollaborationModeIndicator::Plan),
+                FooterBadge::Loop(LoopIndicatorState {
+                    iteration: 4,
+                    max_iterations: 100,
+                    status: LoopIndicatorStatus::Running,
+                }),
+            ]),
+        );
+        assert!(compact.contains("Plan"), "footer: {compact:?}");
+        assert!(compact.contains("Loop"), "footer: {compact:?}");
     }
 
     #[test]

@@ -2202,10 +2202,11 @@ impl App {
             AppEvent::StartLoop {
                 prompt,
                 text_elements,
+                local_images,
                 stop_phrase,
             } => {
                 self.chat_widget
-                    .start_loop(prompt, text_elements, stop_phrase);
+                    .start_loop(prompt, text_elements, local_images, stop_phrase);
             }
             AppEvent::ManageSkillsClosed => {
                 self.chat_widget.handle_manage_skills_closed();

@@ -85,12 +85,14 @@ pub struct McpServerRefreshConfig {
 pub struct LoopConfig {
     pub stop_phrase: String,
     pub max_iterations: u32,
+    #[ts(type = "number")]
     pub max_duration_secs: u64,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq, JsonSchema, TS)]
 pub struct LoopState {
     pub config: LoopConfig,
+    #[ts(type = "number")]
     pub started_at: i64,
     pub iteration: u32,
     pub initial_prompt: String,

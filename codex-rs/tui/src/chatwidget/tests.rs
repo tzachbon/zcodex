@@ -2649,10 +2649,12 @@ async fn loop_stop_phrase_prompt_emits_start_event() {
         AppEvent::StartLoop {
             prompt,
             text_elements,
+            local_images,
             stop_phrase,
         } => {
             assert_eq!(prompt, "ship it");
             assert_eq!(text_elements, Vec::new());
+            assert_eq!(local_images, Vec::new());
             assert_eq!(stop_phrase, "ralph");
         }
         other => panic!("expected StartLoop event, got {other:?}"),
@@ -2664,7 +2666,12 @@ async fn start_loop_submits_first_prompt_and_sets_indicator() {
     let (mut chat, _rx, mut op_rx) = make_chatwidget_manual(None).await;
     configure_session(&mut chat);
 
-    chat.start_loop("ship it".to_string(), Vec::new(), "ralph".to_string());
+    chat.start_loop(
+        "ship it".to_string(),
+        Vec::new(),
+        Vec::new(),
+        "ralph".to_string(),
+    );
 
     let items = match next_submit_op(&mut op_rx) {
         Op::UserTurn { items, .. } => items,
@@ -2693,7 +2700,12 @@ async fn start_loop_submits_first_prompt_and_sets_indicator() {
 async fn loop_turn_complete_auto_submits_continuation() {
     let (mut chat, _rx, mut op_rx) = make_chatwidget_manual(None).await;
     configure_session(&mut chat);
-    chat.start_loop("ship it".to_string(), Vec::new(), "ralph".to_string());
+    chat.start_loop(
+        "ship it".to_string(),
+        Vec::new(),
+        Vec::new(),
+        "ralph".to_string(),
+    );
     let _ = next_submit_op(&mut op_rx);
     chat.handle_codex_event(Event {
         id: "turn-complete".into(),
@@ -2716,16 +2728,59 @@ async fn loop_turn_complete_auto_submits_continuation() {
 }
 
 #[tokio::test]
+async fn loop_turn_complete_skips_followup_when_plan_prompt_opens() {
+    let (mut chat, _rx, mut op_rx) = make_chatwidget_manual(Some("gpt-5")).await;
+    configure_session(&mut chat);
+    chat.set_feature_enabled(Feature::CollaborationModes, true);
+    let plan_mask =
+        collaboration_modes::mask_for_kind(chat.models_manager.as_ref(), ModeKind::Plan)
+            .expect("expected plan collaboration mask");
+    chat.set_collaboration_mask(plan_mask);
+    chat.start_loop(
+        "ship it".to_string(),
+        Vec::new(),
+        Vec::new(),
+        "ralph".to_string(),
+    );
+    let _ = next_submit_op(&mut op_rx);
+
+    chat.on_task_started();
+    chat.on_plan_delta("- Step 1\n- Step 2\n".to_string());
+    chat.on_plan_item_completed("- Step 1\n- Step 2\n".to_string());
+    chat.on_task_complete(Some("still working".to_string()), false);
+
+    loop {
+        match op_rx.try_recv() {
+            Ok(Op::UserTurn { .. }) => panic!("unexpected loop followup while plan prompt open"),
+            Ok(_) => continue,
+            Err(TryRecvError::Empty) => break,
+            Err(TryRecvError::Disconnected) => panic!("op channel closed"),
+        }
+    }
+
+    let popup = render_bottom_popup(&chat, 80);
+    assert!(
+        popup.contains(PLAN_IMPLEMENTATION_TITLE),
+        "expected plan implementation prompt, got {popup:?}"
+    );
+}
+
+#[tokio::test]
 async fn loop_stop_phrase_clears_indicator_after_completion() {
     let (mut chat, _rx, mut op_rx) = make_chatwidget_manual(None).await;
     configure_session(&mut chat);
-    chat.start_loop("ship it".to_string(), Vec::new(), "ralph".to_string());
+    chat.start_loop(
+        "ship it".to_string(),
+        Vec::new(),
+        Vec::new(),
+        "ralph".to_string(),
+    );
     let _ = next_submit_op(&mut op_rx);
 
     chat.handle_codex_event(Event {
         id: "turn-complete".into(),
         msg: EventMsg::TurnComplete(TurnCompleteEvent {
-            last_agent_message: Some("done ralph".to_string()),
+            last_agent_message: Some("ralph".to_string()),
         }),
     });
 
