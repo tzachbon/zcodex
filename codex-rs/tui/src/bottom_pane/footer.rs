@@ -571,7 +571,7 @@ fn footer_from_props_lines(
             FooterMode::ComposerEmpty | FooterMode::ComposerHasDraft
         )
     {
-        return vec![status_line.clone().dim()];
+        return vec![status_line.clone()];
     }
     match props.mode {
         FooterMode::QuitShortcutReminder => {

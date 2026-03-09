@@ -132,6 +132,7 @@ use ratatui::style::Modifier;
 use ratatui::style::Style;
 use ratatui::style::Stylize;
 use ratatui::text::Line;
+use ratatui::text::Span;
 use ratatui::widgets::Paragraph;
 use ratatui::widgets::Wrap;
 use tokio::sync::mpsc::UnboundedSender;
@@ -882,7 +883,11 @@ impl ChatWidget {
         let line = if parts.is_empty() {
             None
         } else {
-            Some(Line::from(parts.join(" · ")))
+            Some(Line::from(vec![
+                Span::from("Z").light_blue().bold(),
+                " · ".dim(),
+                parts.join(" · ").dim(),
+            ]))
         };
         self.set_status_line(line);
     }

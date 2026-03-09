@@ -210,6 +210,8 @@ impl Renderable for StatusIndicatorWidget {
         let mut spans = Vec::with_capacity(5);
         spans.push(spinner(Some(self.last_resume_at), self.animations_enabled));
         spans.push(" ".into());
+        spans.push("Z".light_blue().bold());
+        spans.push(" ".into());
         if self.animations_enabled {
             spans.extend(shimmer_spans(&self.header));
         } else if !self.header.is_empty() {

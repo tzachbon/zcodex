@@ -56,7 +56,7 @@ async fn run_codex_cli(
     codex_home: impl AsRef<Path>,
     cwd: impl AsRef<Path>,
 ) -> anyhow::Result<CodexCliOutput> {
-    let codex_cli = codex_utils_cargo_bin::cargo_bin("codex")?;
+    let codex_cli = find_codex_cli()?;
     let mut env = HashMap::new();
     env.insert(
         "CODEX_HOME".to_string(),
@@ -116,4 +116,27 @@ async fn run_codex_cli(
         exit_code,
         output: output.to_string(),
     })
+}
+
+fn find_codex_cli() -> anyhow::Result<std::path::PathBuf> {
+    if let Ok(path) = codex_utils_cargo_bin::cargo_bin("codex") {
+        return Ok(path);
+    }
+    if let Ok(path) = codex_utils_cargo_bin::cargo_bin("zcodex") {
+        return Ok(path);
+    }
+
+    if !codex_utils_cargo_bin::runfiles_available() {
+        let repo_root = codex_utils_cargo_bin::repo_root()?;
+        let status = std::process::Command::new("cargo")
+            .args(["build", "-p", "codex-cli", "--bin", "zcodex"])
+            .current_dir(repo_root.join("codex-rs"))
+            .status()?;
+        anyhow::ensure!(status.success(), "failed to build zcodex for test");
+        if let Ok(path) = codex_utils_cargo_bin::cargo_bin("zcodex") {
+            return Ok(path);
+        }
+    }
+
+    codex_utils_cargo_bin::cargo_bin("zcodex").map_err(Into::into)
 }

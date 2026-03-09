@@ -86,7 +86,8 @@ impl WidgetRef for &WelcomeWidget {
         lines.push(Line::from(vec![
             "  ".into(),
             "Welcome to ".into(),
-            "Codex".bold(),
+            "Z".light_blue().bold(),
+            "codex".bold(),
             ", OpenAI's command-line coding agent".into(),
         ]));
 

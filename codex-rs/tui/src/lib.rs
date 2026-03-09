@@ -60,6 +60,7 @@ mod app_event;
 mod app_event_sender;
 mod ascii_animation;
 mod bottom_pane;
+mod brand;
 mod chatwidget;
 mod cli;
 mod clipboard_paste;
