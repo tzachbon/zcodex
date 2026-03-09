@@ -1,59 +1,143 @@
-<p align="center"><code>npm i -g @openai/codex</code><br />or <code>brew install --cask codex</code></p>
-<p align="center"><strong>Codex CLI</strong> is a coding agent from OpenAI that runs locally on your computer.
-<p align="center">
-  <img src="https://github.com/openai/codex/blob/main/.github/codex-cli-splash.png" alt="Codex CLI splash" width="80%" />
-</p>
-</br>
-If you want Codex in your code editor (VS Code, Cursor, Windsurf), <a href="https://developers.openai.com/codex/ide">install in your IDE.</a>
-</br>If you are looking for the <em>cloud-based agent</em> from OpenAI, <strong>Codex Web</strong>, go to <a href="https://chatgpt.com/codex">chatgpt.com/codex</a>.</p>
+# zcodex
 
----
+`zcodex` is my fork of `ScriptedAlchemy/codex-native`.
 
-## Quickstart
+This repo is not just the upstream OpenAI CLI. It is a working monorepo for:
 
-### Installing and running Codex CLI
+- a Rust CLI and TUI
+- a native Node SDK
+- a TypeScript SDK
+- multi-agent review, merge, and CI tooling
+- local fork experiments and branding changes
 
-Install globally with your preferred package manager:
+## What lives here
 
-```shell
-# Install using npm
-npm install -g @openai/codex
+- `codex-rs/`
+  Rust workspace for the main CLI, TUI, MCP server, app-server, and shared crates.
+- `sdk/native/`
+  Native N-API SDK published as `@codex-native/sdk`.
+- `sdk/typescript/`
+  TypeScript SDK compatibility layer and JS-facing APIs.
+- `codex-agents-suite/`
+  Multi-agent workflows for diff review, merge solving, and CI fixing.
+- `codex-cli/`
+  Legacy TypeScript CLI package wiring and packaging assets.
+
+## Repo remotes
+
+This checkout is set up as a normal fork:
+
+- `origin` -> `https://github.com/tzachbon/zcodex.git`
+- `upstream` -> `https://github.com/ScriptedAlchemy/codex-native.git`
+
+Typical sync flow:
+
+```bash
+git fetch upstream
+git rebase upstream/main
+git push origin main
 ```
 
-```shell
-# Install using Homebrew
-brew install --cask codex
+## Quick start
+
+### Rust CLI and TUI
+
+From the repo root:
+
+```bash
+cd codex-rs
+cargo run --bin zcodex
 ```
 
-Then simply run `codex` to get started.
+Run a one-off prompt:
 
-<details>
-<summary>You can also go to the <a href="https://github.com/openai/codex/releases/latest">latest GitHub Release</a> and download the appropriate binary for your platform.</summary>
+```bash
+cd codex-rs
+cargo run --bin zcodex -- "explain this repo"
+```
 
-Each GitHub Release contains many executables, but in practice, you likely want one of these:
+Non-interactive mode:
 
-- macOS
-  - Apple Silicon/arm64: `codex-aarch64-apple-darwin.tar.gz`
-  - x86_64 (older Mac hardware): `codex-x86_64-apple-darwin.tar.gz`
-- Linux
-  - x86_64: `codex-x86_64-unknown-linux-musl.tar.gz`
-  - arm64: `codex-aarch64-unknown-linux-musl.tar.gz`
+```bash
+cd codex-rs
+cargo run --bin zcodex -- exec "review the current diff"
+```
 
-Each archive contains a single entry with the platform baked into the name (e.g., `codex-x86_64-unknown-linux-musl`), so you likely want to rename it to `codex` after extracting it.
+### Native SDK
 
-</details>
+Build the workspace packages:
 
-### Using Codex with your ChatGPT plan
+```bash
+pnpm install
+pnpm build
+```
 
-Run `codex` and select **Sign in with ChatGPT**. We recommend signing into your ChatGPT account to use Codex as part of your Plus, Pro, Team, Edu, or Enterprise plan. [Learn more about what's included in your ChatGPT plan](https://help.openai.com/en/articles/11369540-codex-in-chatgpt).
+Use the native SDK:
 
-You can also use Codex with an API key, but this requires [additional setup](https://developers.openai.com/codex/auth#sign-in-with-an-api-key).
+```ts
+import { Codex } from "@codex-native/sdk";
+
+const codex = new Codex();
+const thread = codex.startThread();
+const turn = await thread.run("Summarize this repository");
+
+console.log(turn.finalResponse);
+```
+
+Launch the native CLI wrapper:
+
+```bash
+pnpm cx
+```
+
+### Agents suite
+
+```bash
+pnpm --filter codex-agents-suite start
+```
+
+Direct entrypoints:
+
+```bash
+pnpm --filter codex-agents-suite run run:diff
+pnpm --filter codex-agents-suite run run:merge
+pnpm --filter codex-agents-suite run run:ci-fix
+```
+
+## Build and test
+
+Rust workspace:
+
+```bash
+cd codex-rs
+just fmt
+cargo test -p codex-tui
+```
+
+JS workspace:
+
+```bash
+pnpm install
+pnpm build
+```
+
+Full repo checks:
+
+```bash
+pnpm test
+```
+
+## Notes
+
+- The Rust binary now exposes `zcodex` in addition to upstream naming paths that may still exist in parts of the repo.
+- Top-level docs from upstream may still reference OpenAI branding in places. This README is the fork-level entrypoint.
+- This repo is meant for local development first, not polished public distribution yet.
 
 ## Docs
 
-- [**Codex Documentation**](https://developers.openai.com/codex)
-- [**Contributing**](./docs/contributing.md)
-- [**Installing & building**](./docs/install.md)
-- [**Open source fund**](./docs/open-source-fund.md)
+- [Installing and building](./docs/install.md)
+- [Contributing](./docs/contributing.md)
+- [Native SDK docs](./sdk/native/README.md)
+- [Agents suite docs](./codex-agents-suite/README.md)
 
-This repository is licensed under the [Apache-2.0 License](LICENSE).
+Licensed under [Apache-2.0](./LICENSE).
