@@ -17,8 +17,6 @@ pub(crate) fn compact_title_spans(version: &str) -> Vec<Span<'static>> {
 pub(crate) fn startup_hero_lines(version: &str, inner_width: usize) -> Vec<Line<'static>> {
     let banner = if fits(inner_width, &large_banner_lines()) {
         large_banner_lines()
-    } else if fits(inner_width, &medium_banner_lines()) {
-        medium_banner_lines()
     } else {
         vec![Line::from(compact_title_spans(version))]
     };
@@ -45,56 +43,23 @@ fn fits(inner_width: usize, lines: &[Line<'static>]) -> bool {
 
 fn large_banner_lines() -> Vec<Line<'static>> {
     vec![
-        hero_line(
-            "███████",
-            " ██████",
-            " █████ ",
-            "██████ ",
-            "███████",
-            "██   ██",
+        banner_line(
+            "▓▓▓▓▓▓▓▓\\",
+            "  ▓▓▓▓▓▓\\   ▓▓▓▓▓▓\\  ▓▓▓▓▓▓▓\\  ▓▓▓▓▓▓▓▓\\ ",
         ),
-        hero_line("     ██", "██", "██   ██", "██   ██", "██", " ██ ██ "),
-        hero_line("   ███ ", "██", "██   ██", "██   ██", "█████", "  ███  "),
-        hero_line("  ██   ", "██", "██   ██", "██   ██", "██", " ██ ██ "),
-        hero_line(
-            "███████",
-            " ██████",
-            " █████ ",
-            "██████ ",
-            "███████",
-            "██   ██",
+        banner_line("\\____▓▓  |", "▓▓  __▓▓\\ ▓▓  __▓▓\\ ▓▓  __▓▓\\ ▓▓  _____|"),
+        banner_line("    ▓▓  /", " ▓▓ /  \\__|▓▓ /  ▓▓ |▓▓ |  ▓▓ |▓▓ |      "),
+        banner_line("   ▓▓  /", "  ▓▓ |      ▓▓ |  ▓▓ |▓▓ |  ▓▓ |▓▓▓▓▓\\    "),
+        banner_line("  ▓▓  /", "   ▓▓ |      ▓▓ |  ▓▓ |▓▓ |  ▓▓ |▓▓  __|   "),
+        banner_line(" ▓▓  /", "    ▓▓ |  ▓▓\\ ▓▓ |  ▓▓ |▓▓ |  ▓▓ |▓▓ |      "),
+        banner_line("▓▓▓▓▓▓▓▓\\", " \\▓▓▓▓▓▓  | ▓▓▓▓▓▓  |▓▓▓▓▓▓▓  |▓▓▓▓▓▓▓▓\\ "),
+        banner_line(
+            "\\________|",
+            " \\______/  \\______/ \\_______/ \\________|",
         ),
     ]
 }
 
-fn medium_banner_lines() -> Vec<Line<'static>> {
-    vec![
-        hero_line("█████", "████", "███", "████", "█████", "█ █"),
-        hero_line("   ██", "█", "█ █", "█ █", "██", " █ "),
-        hero_line(" ██  ", "█", "█ █", "█ █", "███", "█ █"),
-        hero_line("█████", "████", "███", "████", "█████", "█ █"),
-    ]
-}
-
-fn hero_line(
-    z: &'static str,
-    c: &'static str,
-    o: &'static str,
-    d: &'static str,
-    e: &'static str,
-    x: &'static str,
-) -> Line<'static> {
-    Line::from(vec![
-        z.light_blue().bold(),
-        "  ".into(),
-        c.bold(),
-        "  ".into(),
-        o.bold(),
-        "  ".into(),
-        d.bold(),
-        "  ".into(),
-        e.bold(),
-        "  ".into(),
-        x.bold(),
-    ])
+fn banner_line(z: &'static str, rest: &'static str) -> Line<'static> {
+    Line::from(vec![z.light_blue().bold(), rest.bold()])
 }
