@@ -187,7 +187,8 @@ use crate::history_cell::PlainHistoryCell;
 use crate::history_cell::WebSearchCell;
 use crate::key_hint;
 use crate::key_hint::KeyBinding;
-use crate::markdown::append_markdown;
+use crate::markdown::append_markdown_for_surface;
+use crate::mdview_render::MarkdownSurface;
 use crate::render::Insets;
 use crate::render::renderable::ColumnRenderable;
 use crate::render::renderable::FlexRenderable;
@@ -1133,18 +1134,6 @@ impl ChatWidget {
         // Before streaming plan content, flush any active exec cell group.
         self.flush_unified_exec_wait_streak();
         self.flush_active_cell();
-
-        if self.plan_stream_controller.is_none() {
-            self.plan_stream_controller = Some(PlanStreamController::new(
-                self.last_rendered_width.get().map(|w| w.saturating_sub(4)),
-            ));
-        }
-        if let Some(controller) = self.plan_stream_controller.as_mut()
-            && controller.push(&delta)
-        {
-            self.app_event_tx.send(AppEvent::StartCommitAnimation);
-            self.run_catch_up_commit_tick();
-        }
         self.request_redraw();
     }
 
@@ -1158,14 +1147,7 @@ impl ChatWidget {
         self.plan_delta_buffer.clear();
         self.plan_item_active = false;
         self.saw_plan_item_this_turn = true;
-        if let Some(mut controller) = self.plan_stream_controller.take()
-            && let Some(cell) = controller.finalize()
-        {
-            self.add_boxed_history(cell);
-            // TODO: Replace streamed output with the final plan item text if plan streaming is
-            // removed or if we need to reconcile mismatches between streamed and final content.
-            return;
-        }
+        self.plan_stream_controller = None;
         if plan_text.is_empty() {
             return;
         }
@@ -3901,7 +3883,12 @@ impl ChatWidget {
                 } else {
                     // Show explanation when there are no structured findings.
                     let mut rendered: Vec<ratatui::text::Line<'static>> = vec!["".into()];
-                    append_markdown(&explanation, None, &mut rendered);
+                    append_markdown_for_surface(
+                        &explanation,
+                        None,
+                        MarkdownSurface::Explanation,
+                        &mut rendered,
+                    );
                     let body_cell = AgentMessageCell::new(rendered, false);
                     self.app_event_tx
                         .send(AppEvent::InsertHistoryCell(Box::new(body_cell)));

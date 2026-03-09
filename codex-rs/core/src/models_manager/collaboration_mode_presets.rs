@@ -100,4 +100,16 @@ mod tests {
             request_user_input_availability_message(ModeKind::Default);
         assert!(default_instructions.contains(&expected_availability_message));
     }
+
+    #[test]
+    fn plan_mode_instructions_document_raw_tui_wrapper() {
+        let plan_instructions = plan_preset()
+            .developer_instructions
+            .expect("plan preset should include instructions")
+            .expect("plan instructions should be set");
+
+        assert!(plan_instructions.contains("<raw_tui>"));
+        assert!(plan_instructions.contains("</raw_tui>"));
+        assert!(plan_instructions.contains("<proposed_plan>"));
+    }
 }

@@ -21,7 +21,8 @@ use crate::exec_cell::spinner;
 use crate::exec_command::relativize_to_home;
 use crate::exec_command::strip_bash_lc_and_escape;
 use crate::live_wrap::take_prefix_by_width;
-use crate::markdown::append_markdown;
+use crate::markdown::append_markdown_for_surface;
+use crate::mdview_render::MarkdownSurface;
 use crate::render::line_utils::line_to_static;
 use crate::render::line_utils::prefix_lines;
 use crate::render::line_utils::push_owned_lines;
@@ -73,6 +74,7 @@ use std::collections::HashMap;
 use std::io::Cursor;
 use std::path::Path;
 use std::path::PathBuf;
+use std::sync::Mutex;
 use std::time::Duration;
 use std::time::Instant;
 use tracing::error;
@@ -237,6 +239,29 @@ fn build_user_message_lines_with_elements(
     raw_lines
 }
 
+#[derive(Debug, Default)]
+struct WidthCachedLines {
+    entries: Mutex<HashMap<u16, Vec<Line<'static>>>>,
+}
+
+impl WidthCachedLines {
+    fn get_or_render<F>(&self, width: u16, render: F) -> Vec<Line<'static>>
+    where
+        F: FnOnce() -> Vec<Line<'static>>,
+    {
+        let mut entries = self
+            .entries
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if let Some(lines) = entries.get(&width) {
+            return lines.clone();
+        }
+        let lines = render();
+        entries.insert(width, lines.clone());
+        lines
+    }
+}
+
 impl HistoryCell for UserHistoryCell {
     fn display_lines(&self, width: u16) -> Vec<Line<'static>> {
         let mut lines: Vec<Line<'static>> = Vec::new();
@@ -283,6 +308,7 @@ pub(crate) struct ReasoningSummaryCell {
     _header: String,
     content: String,
     transcript_only: bool,
+    lines_cache: WidthCachedLines,
 }
 
 impl ReasoningSummaryCell {
@@ -291,35 +317,39 @@ impl ReasoningSummaryCell {
             _header: header,
             content,
             transcript_only,
+            lines_cache: WidthCachedLines::default(),
         }
     }
 
     fn lines(&self, width: u16) -> Vec<Line<'static>> {
-        let mut lines: Vec<Line<'static>> = Vec::new();
-        append_markdown(
-            &self.content,
-            Some((width as usize).saturating_sub(2)),
-            &mut lines,
-        );
-        let summary_style = Style::default().dim().italic();
-        let summary_lines = lines
-            .into_iter()
-            .map(|mut line| {
-                line.spans = line
-                    .spans
-                    .into_iter()
-                    .map(|span| span.patch_style(summary_style))
-                    .collect();
-                line
-            })
-            .collect::<Vec<_>>();
+        self.lines_cache.get_or_render(width, || {
+            let mut lines: Vec<Line<'static>> = Vec::new();
+            append_markdown_for_surface(
+                &self.content,
+                Some((width as usize).saturating_sub(2)),
+                MarkdownSurface::ReasoningSummary,
+                &mut lines,
+            );
+            let summary_style = Style::default().dim().italic();
+            let summary_lines = lines
+                .into_iter()
+                .map(|mut line| {
+                    line.spans = line
+                        .spans
+                        .into_iter()
+                        .map(|span| span.patch_style(summary_style))
+                        .collect();
+                    line
+                })
+                .collect::<Vec<_>>();
 
-        word_wrap_lines(
-            &summary_lines,
-            RtOptions::new(width as usize)
-                .initial_indent("• ".dim().into())
-                .subsequent_indent("  ".into()),
-        )
+            word_wrap_lines(
+                &summary_lines,
+                RtOptions::new(width as usize)
+                    .initial_indent("• ".dim().into())
+                    .subsequent_indent("  ".into()),
+            )
+        })
     }
 }
 
@@ -897,29 +927,36 @@ pub(crate) fn padded_emoji(emoji: &str) -> String {
 #[derive(Debug)]
 struct TooltipHistoryCell {
     tip: String,
+    lines_cache: WidthCachedLines,
 }
 
 impl TooltipHistoryCell {
     fn new(tip: String) -> Self {
-        Self { tip }
+        Self {
+            tip,
+            lines_cache: WidthCachedLines::default(),
+        }
     }
 }
 
 impl HistoryCell for TooltipHistoryCell {
     fn display_lines(&self, width: u16) -> Vec<Line<'static>> {
-        let indent = "  ";
-        let indent_width = UnicodeWidthStr::width(indent);
-        let wrap_width = usize::from(width.max(1))
-            .saturating_sub(indent_width)
-            .max(1);
-        let mut lines: Vec<Line<'static>> = Vec::new();
-        append_markdown(
-            &format!("**Tip:** {}", self.tip),
-            Some(wrap_width),
-            &mut lines,
-        );
+        self.lines_cache.get_or_render(width, || {
+            let indent = "  ";
+            let indent_width = UnicodeWidthStr::width(indent);
+            let wrap_width = usize::from(width.max(1))
+                .saturating_sub(indent_width)
+                .max(1);
+            let mut lines: Vec<Line<'static>> = Vec::new();
+            append_markdown_for_surface(
+                &format!("**Tip:** {}", self.tip),
+                Some(wrap_width),
+                MarkdownSurface::Tip,
+                &mut lines,
+            );
 
-        prefix_lines(lines, indent.into(), indent.into())
+            prefix_lines(lines, indent.into(), indent.into())
+        })
     }
 }
 
@@ -1916,7 +1953,10 @@ pub(crate) fn new_plan_update(update: UpdatePlanArgs) -> PlanUpdateCell {
 }
 
 pub(crate) fn new_proposed_plan(plan_markdown: String) -> ProposedPlanCell {
-    ProposedPlanCell { plan_markdown }
+    ProposedPlanCell {
+        plan_markdown,
+        lines_cache: WidthCachedLines::default(),
+    }
 }
 
 pub(crate) fn new_proposed_plan_stream(
@@ -1932,6 +1972,7 @@ pub(crate) fn new_proposed_plan_stream(
 #[derive(Debug)]
 pub(crate) struct ProposedPlanCell {
     plan_markdown: String,
+    lines_cache: WidthCachedLines,
 }
 
 #[derive(Debug)]
@@ -1942,23 +1983,30 @@ pub(crate) struct ProposedPlanStreamCell {
 
 impl HistoryCell for ProposedPlanCell {
     fn display_lines(&self, width: u16) -> Vec<Line<'static>> {
-        let mut lines: Vec<Line<'static>> = Vec::new();
-        lines.push(vec!["• ".dim(), "Proposed Plan".bold()].into());
-        lines.push(Line::from(" "));
+        self.lines_cache.get_or_render(width, || {
+            let mut lines: Vec<Line<'static>> = Vec::new();
+            lines.push(vec!["• ".dim(), "Proposed Plan".bold()].into());
+            lines.push(Line::from(" "));
 
-        let mut plan_lines: Vec<Line<'static>> = vec![Line::from(" ")];
-        let plan_style = proposed_plan_style();
-        let wrap_width = width.saturating_sub(4).max(1) as usize;
-        let mut body: Vec<Line<'static>> = Vec::new();
-        append_markdown(&self.plan_markdown, Some(wrap_width), &mut body);
-        if body.is_empty() {
-            body.push(Line::from("(empty)".dim().italic()));
-        }
-        plan_lines.extend(prefix_lines(body, "  ".into(), "  ".into()));
-        plan_lines.push(Line::from(" "));
+            let mut plan_lines: Vec<Line<'static>> = vec![Line::from(" ")];
+            let plan_style = proposed_plan_style();
+            let wrap_width = width.saturating_sub(4).max(1) as usize;
+            let mut body: Vec<Line<'static>> = Vec::new();
+            append_markdown_for_surface(
+                &self.plan_markdown,
+                Some(wrap_width),
+                MarkdownSurface::ProposedPlanFinal,
+                &mut body,
+            );
+            if body.is_empty() {
+                body.push(Line::from("(empty)".dim().italic()));
+            }
+            plan_lines.extend(prefix_lines(body, "  ".into(), "  ".into()));
+            plan_lines.push(Line::from(" "));
 
-        lines.extend(plan_lines.into_iter().map(|line| line.style(plan_style)));
-        lines
+            lines.extend(plan_lines.into_iter().map(|line| line.style(plan_style)));
+            lines
+        })
     }
 }
 

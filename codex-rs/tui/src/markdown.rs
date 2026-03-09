@@ -1,4 +1,9 @@
 use ratatui::text::Line;
+
+use crate::mdview_render::MarkdownRenderRequest;
+use crate::mdview_render::MarkdownSurface;
+
+#[cfg(test)]
 pub(crate) fn append_markdown(
     markdown_source: &str,
     width: Option<usize>,
@@ -6,6 +11,20 @@ pub(crate) fn append_markdown(
 ) {
     let rendered = crate::markdown_render::render_markdown_text_with_width(markdown_source, width);
     crate::render::line_utils::push_owned_lines(&rendered.lines, lines);
+}
+
+pub(crate) fn append_markdown_for_surface(
+    markdown_source: &str,
+    width: Option<usize>,
+    surface: MarkdownSurface,
+    lines: &mut Vec<Line<'static>>,
+) {
+    let rendered = crate::mdview_render::render_markdown_lines(MarkdownRenderRequest {
+        source: markdown_source,
+        width,
+        surface,
+    });
+    crate::render::line_utils::push_owned_lines(&rendered, lines);
 }
 
 #[cfg(test)]

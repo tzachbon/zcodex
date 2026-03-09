@@ -84,6 +84,7 @@ pub mod live_wrap;
 mod markdown;
 mod markdown_render;
 mod markdown_stream;
+mod mdview_render;
 mod model_migration;
 mod notifications;
 pub mod onboarding;

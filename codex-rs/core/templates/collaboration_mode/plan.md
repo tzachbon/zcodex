@@ -100,11 +100,22 @@ When you present the official plan, wrap it in a `<proposed_plan>` block so the 
 3) The closing tag must be on its own line.
 4) Use Markdown inside the block.
 5) Keep the tags exactly as `<proposed_plan>` and `</proposed_plan>` (do not translate or rename them), even if the plan content is in another language.
+6) Content inside `<proposed_plan>` is rendered in the TUI via a Markdown renderer.
+7) If you need the entire plan body rendered raw in the native TUI style, wrap the whole body in `<raw_tui>` and `</raw_tui>` inside the `<proposed_plan>` block.
+8) Use `<raw_tui>` only for the entire plan body, not for inline fragments.
 
 Example:
 
 <proposed_plan>
 plan content
+</proposed_plan>
+
+Raw rendering example:
+
+<proposed_plan>
+<raw_tui>
+plan content
+</raw_tui>
 </proposed_plan>
 
 plan content should be human and agent digestible. The final plan must be plan-only and include:

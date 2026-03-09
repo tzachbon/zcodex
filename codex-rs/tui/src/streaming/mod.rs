@@ -16,6 +16,7 @@ use std::time::Instant;
 use ratatui::text::Line;
 
 use crate::markdown_stream::MarkdownStreamCollector;
+use crate::mdview_render::MarkdownSurface;
 pub(crate) mod chunking;
 pub(crate) mod commit_tick;
 pub(crate) mod controller;
@@ -34,9 +35,9 @@ pub(crate) struct StreamState {
 
 impl StreamState {
     /// Creates an empty stream state with an optional target wrap width.
-    pub(crate) fn new(width: Option<usize>) -> Self {
+    pub(crate) fn new(width: Option<usize>, surface: MarkdownSurface) -> Self {
         Self {
-            collector: MarkdownStreamCollector::new(width),
+            collector: MarkdownStreamCollector::new(width, surface),
             queued_lines: VecDeque::new(),
             has_seen_delta: false,
         }
@@ -105,7 +106,7 @@ mod tests {
 
     #[test]
     fn drain_n_clamps_to_available_lines() {
-        let mut state = StreamState::new(None);
+        let mut state = StreamState::new(None, MarkdownSurface::AgentStream);
         state.enqueue(vec![Line::from("one")]);
 
         let drained = state.drain_n(8);

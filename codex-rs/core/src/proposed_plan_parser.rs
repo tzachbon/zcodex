@@ -102,6 +102,7 @@ pub(crate) fn extract_proposed_plan_text(text: &str) -> Option<String> {
 mod tests {
     use super::ProposedPlanParser;
     use super::ProposedPlanSegment;
+    use super::extract_proposed_plan_text;
     use super::strip_proposed_plan_blocks;
     use pretty_assertions::assert_eq;
 
@@ -181,5 +182,14 @@ mod tests {
     fn strips_proposed_plan_blocks_from_text() {
         let text = "before\n<proposed_plan>\n- step\n</proposed_plan>\nafter";
         assert_eq!(strip_proposed_plan_blocks(text), "before\nafter");
+    }
+
+    #[test]
+    fn extracts_plan_text_with_raw_tui_wrapper_unchanged() {
+        let text = "<proposed_plan>\n<raw_tui>\n- step 1\n</raw_tui>\n</proposed_plan>";
+        assert_eq!(
+            extract_proposed_plan_text(text),
+            Some("<raw_tui>\n- step 1\n</raw_tui>\n".to_string())
+        );
     }
 }

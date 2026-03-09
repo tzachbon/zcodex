@@ -1,5 +1,6 @@
 use crate::history_cell::HistoryCell;
 use crate::history_cell::{self};
+use crate::mdview_render::MarkdownSurface;
 use crate::render::line_utils::prefix_lines;
 use crate::style::proposed_plan_style;
 use ratatui::prelude::Stylize;
@@ -20,7 +21,7 @@ pub(crate) struct StreamController {
 impl StreamController {
     pub(crate) fn new(width: Option<usize>) -> Self {
         Self {
-            state: StreamState::new(width),
+            state: StreamState::new(width, MarkdownSurface::AgentStream),
             finishing_after_drain: false,
             header_emitted: false,
         }
@@ -115,15 +116,17 @@ pub(crate) struct PlanStreamController {
 }
 
 impl PlanStreamController {
+    #[allow(dead_code)]
     pub(crate) fn new(width: Option<usize>) -> Self {
         Self {
-            state: StreamState::new(width),
+            state: StreamState::new(width, MarkdownSurface::ProposedPlanStream),
             header_emitted: false,
             top_padding_emitted: false,
         }
     }
 
     /// Push a delta; if it contains a newline, commit completed lines and start animation.
+    #[allow(dead_code)]
     pub(crate) fn push(&mut self, delta: &str) -> bool {
         let state = &mut self.state;
         if !delta.is_empty() {
@@ -346,7 +349,12 @@ mod tests {
         // Full render of the same source
         let source: String = deltas.iter().copied().collect();
         let mut rendered: Vec<ratatui::text::Line<'static>> = Vec::new();
-        crate::markdown::append_markdown(&source, None, &mut rendered);
+        crate::markdown::append_markdown_for_surface(
+            &source,
+            None,
+            MarkdownSurface::AgentStream,
+            &mut rendered,
+        );
         let rendered_strs = lines_to_plain_strings(&rendered);
 
         assert_eq!(streamed, rendered_strs);

@@ -1499,6 +1499,26 @@ async fn plan_implementation_popup_shows_after_proposed_plan_output() {
 }
 
 #[tokio::test]
+async fn completed_plan_inserts_final_proposed_plan_cell() {
+    let (mut chat, mut rx, _op_rx) = make_chatwidget_manual(Some("gpt-5")).await;
+    chat.set_feature_enabled(Feature::CollaborationModes, true);
+    let plan_mask =
+        collaboration_modes::mask_for_kind(chat.models_manager.as_ref(), ModeKind::Plan)
+            .expect("expected plan collaboration mask");
+    chat.set_collaboration_mask(plan_mask);
+
+    chat.on_task_started();
+    chat.on_plan_delta("# Title\n\n- Step 1\n".to_string());
+    chat.on_plan_item_completed("# Title\n\n- Step 1\n".to_string());
+
+    let event = rx.try_recv().expect("expected history event");
+    let AppEvent::InsertHistoryCell(cell) = event else {
+        panic!("expected InsertHistoryCell event");
+    };
+    assert!(cell.as_any().is::<history_cell::ProposedPlanCell>());
+}
+
+#[tokio::test]
 async fn plan_implementation_popup_skips_when_rate_limit_prompt_pending() {
     let (mut chat, _rx, _op_rx) = make_chatwidget_manual(Some("gpt-5")).await;
     chat.auth_manager =
