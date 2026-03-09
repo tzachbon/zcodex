@@ -7,6 +7,7 @@ use std::sync::OnceLock;
 use std::time::Duration;
 
 use async_trait::async_trait;
+use codex_protocol::models::FunctionCallOutputBody;
 use codex_protocol::models::ResponseInputItem;
 use codex_utils_readiness::Readiness;
 use tracing::error;
@@ -345,7 +346,17 @@ impl ToolRegistry {
                         .await;
                         Ok(out.into_response(&call_id_owned, &payload_for_response))
                     }
-                    Err(err) => Err(err),
+                    Err(err) => {
+                        dispatch_after_tool_hook(
+                            hook_session.as_ref(),
+                            hook_turn.as_ref(),
+                            &tool_name,
+                            &call_id_owned,
+                            &tool_output_for_error(&err),
+                        )
+                        .await;
+                        Err(err)
+                    }
                 };
             }
         }
@@ -396,8 +407,25 @@ impl ToolRegistry {
                 .await;
                 Ok(output.into_response(&call_id_owned, &payload_for_response))
             }
-            Err(err) => Err(err),
+            Err(err) => {
+                dispatch_after_tool_hook(
+                    hook_session.as_ref(),
+                    hook_turn.as_ref(),
+                    &tool_name,
+                    &call_id_owned,
+                    &tool_output_for_error(&err),
+                )
+                .await;
+                Err(err)
+            }
         }
+    }
+}
+
+fn tool_output_for_error(error: &FunctionCallError) -> ToolOutput {
+    ToolOutput::Function {
+        body: FunctionCallOutputBody::Text(error.to_string()),
+        success: Some(false),
     }
 }
 

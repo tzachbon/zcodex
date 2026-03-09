@@ -1124,7 +1124,7 @@ impl ChatWidget {
     }
 
     fn on_plan_delta(&mut self, delta: String) {
-        if self.active_mode_kind() != ModeKind::Plan {
+        if !Self::is_plan_mode(self.active_mode_kind()) {
             return;
         }
         if !self.plan_item_active {
@@ -1298,7 +1298,7 @@ impl ChatWidget {
         if !self.queued_user_messages.is_empty() {
             return;
         }
-        if self.active_mode_kind() != ModeKind::Plan {
+        if !Self::is_plan_mode(self.active_mode_kind()) {
             return;
         }
         if !self.saw_plan_item_this_turn {
@@ -3088,7 +3088,7 @@ impl ChatWidget {
             return;
         }
         if let Some(workflow) = Self::workflow_for_slash_command(cmd) {
-            self.run_gsd_workflow_command(workflow, String::new());
+            self.run_gsd_workflow_command(workflow, String::new(), Vec::new(), HashMap::new());
             return;
         }
         match cmd {
@@ -3374,14 +3374,20 @@ impl ChatWidget {
         let trimmed = args.trim();
         match cmd {
             _ if Self::workflow_for_slash_command(cmd).is_some() => {
-                let Some((prepared_args, _prepared_elements)) =
+                let Some((prepared_args, prepared_elements)) =
                     self.bottom_pane.prepare_inline_args_submission(false)
                 else {
                     return;
                 };
+                let mention_paths = self.bottom_pane.take_mention_paths();
                 let workflow = Self::workflow_for_slash_command(cmd)
                     .expect("workflow command should still resolve");
-                self.run_gsd_workflow_command(workflow, prepared_args);
+                self.run_gsd_workflow_command(
+                    workflow,
+                    prepared_args,
+                    prepared_elements,
+                    mention_paths,
+                );
                 self.bottom_pane.drain_pending_submission_state();
             }
             SlashCommand::Rename if !trimmed.is_empty() => {
@@ -3495,15 +3501,27 @@ impl ChatWidget {
         })
     }
 
-    fn run_gsd_workflow_command(&mut self, workflow: GsdWorkflowCommand, args: String) {
+    fn run_gsd_workflow_command(
+        &mut self,
+        workflow: GsdWorkflowCommand,
+        args: String,
+        text_elements: Vec<TextElement>,
+        mention_paths: HashMap<String, String>,
+    ) {
         if let Some(mode) = workflow.preferred_mode()
             && self.collaboration_modes_enabled()
             && let Some(mask) = self.collaboration_mask_for_kind(mode)
         {
             self.set_collaboration_mask(mask);
         }
-        let prompt = codex_core::gsd::render_workflow_prompt(workflow, &args);
-        self.submit_user_message(prompt.into());
+        let rendered =
+            codex_core::gsd::render_workflow_prompt_with_elements(workflow, &args, &text_elements);
+        self.submit_user_message(UserMessage {
+            text: rendered.text,
+            local_images: Vec::new(),
+            text_elements: rendered.text_elements,
+            mention_paths,
+        });
     }
 
     fn has_gsd_project_state(&self) -> bool {
@@ -3589,6 +3607,10 @@ impl ChatWidget {
             items,
             ..Default::default()
         });
+    }
+
+    fn is_plan_mode(kind: ModeKind) -> bool {
+        matches!(kind, ModeKind::Plan | ModeKind::ConversationPlan)
     }
 
     fn show_rename_prompt(&mut self) {

@@ -602,12 +602,12 @@ mod tests {
         let truncated = truncate_before_nth_user_message(InitialHistory::Forked(rollout_items), 1);
         let got_items = truncated.get_rollout_items();
 
-        let expected: Vec<RolloutItem> = vec![
-            RolloutItem::ResponseItem(items[0].clone()),
-            RolloutItem::ResponseItem(items[1].clone()),
-            RolloutItem::ResponseItem(items[2].clone()),
-            RolloutItem::ResponseItem(items[3].clone()),
-        ];
+        let expected: Vec<RolloutItem> = items
+            .iter()
+            .cloned()
+            .map(RolloutItem::ResponseItem)
+            .take(got_items.len())
+            .collect();
 
         assert_eq!(
             serde_json::to_value(&got_items).unwrap(),

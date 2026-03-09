@@ -1,4 +1,6 @@
 use codex_protocol::config_types::ModeKind;
+use codex_protocol::user_input::ByteRange;
+use codex_protocol::user_input::TextElement;
 
 const GSD_CORE_PROMPT: &str = include_str!("../templates/gsd/core.md");
 const GSD_DEFAULT_PROMPT: &str = include_str!("../templates/gsd/default.md");
@@ -49,6 +51,16 @@ struct WorkflowMeta {
     next_step: Option<&'static str>,
     preferred_mode: Option<ModeKind>,
     planning_only: bool,
+}
+
+pub struct RenderedWorkflowPrompt {
+    pub text: String,
+    pub text_elements: Vec<TextElement>,
+}
+
+struct SanitizedArgs {
+    text: String,
+    boundary_map: Vec<(usize, usize)>,
 }
 
 impl GsdWorkflowCommand {
@@ -329,12 +341,20 @@ pub fn mode_developer_instructions(mode: ModeKind) -> Option<&'static str> {
 }
 
 pub fn render_workflow_prompt(command: GsdWorkflowCommand, args: &str) -> String {
+    render_workflow_prompt_with_elements(command, args, &[]).text
+}
+
+pub fn render_workflow_prompt_with_elements(
+    command: GsdWorkflowCommand,
+    args: &str,
+    text_elements: &[TextElement],
+) -> RenderedWorkflowPrompt {
     let meta = command.meta();
-    let trimmed_args = sanitize_args_for_prompt(args);
-    let args_summary = if trimmed_args.is_empty() {
+    let sanitized_args = sanitize_args_for_prompt(args);
+    let args_summary = if sanitized_args.text.is_empty() {
         "No inline arguments were provided.".to_string()
     } else {
-        format!("Inline arguments: `{trimmed_args}`.")
+        "Inline arguments: `__CODEX_GSD_INLINE_ARGS__`.".to_string()
     };
     let plan_only = if meta.planning_only {
         "Stop after the planning artifacts and state updates are ready. Do not execute implementation tasks in this command."
@@ -348,7 +368,7 @@ pub fn render_workflow_prompt(command: GsdWorkflowCommand, args: &str) -> String
         })
         .unwrap_or_default();
 
-    format!(
+    let mut text = format!(
         r#"<gsd_native_command>
 visible_name: /{visible_name}
 upstream_name: /gsd:{upstream_name}
@@ -379,21 +399,61 @@ Keep the `.planning/` state coherent with the work you perform.
         args_summary = args_summary,
         plan_only = plan_only,
         next_step = next_step,
-    )
+    );
+
+    let prompt_text_elements = if sanitized_args.text.is_empty() {
+        Vec::new()
+    } else {
+        let marker = "`__CODEX_GSD_INLINE_ARGS__`";
+        let args_start = text
+            .find(marker)
+            .map(|start| start + 1)
+            .expect("workflow prompt must contain inline arg marker");
+        text = text.replacen("__CODEX_GSD_INLINE_ARGS__", &sanitized_args.text, 1);
+        text_elements
+            .iter()
+            .map(|element| {
+                element.map_range(|range| ByteRange {
+                    start: args_start
+                        + map_sanitized_offset(&sanitized_args.boundary_map, range.start),
+                    end: args_start + map_sanitized_offset(&sanitized_args.boundary_map, range.end),
+                })
+            })
+            .collect()
+    };
+
+    RenderedWorkflowPrompt {
+        text,
+        text_elements: prompt_text_elements,
+    }
 }
 
-fn sanitize_args_for_prompt(args: &str) -> String {
-    args.trim()
-        .chars()
-        .map(|ch| match ch {
+fn sanitize_args_for_prompt(args: &str) -> SanitizedArgs {
+    let trimmed = args.trim();
+    let mut text = String::new();
+    let mut boundary_map = Vec::with_capacity(trimmed.chars().count() + 2);
+    boundary_map.push((0, 0));
+    for (offset, ch) in trimmed.char_indices() {
+        let sanitized = match ch {
             '`' => "\\`".to_string(),
             '\n' => "\\n".to_string(),
             '\r' => "\\r".to_string(),
             '\t' => "\\t".to_string(),
             ch if ch.is_control() => " ".to_string(),
             ch => ch.to_string(),
-        })
-        .collect()
+        };
+        text.push_str(&sanitized);
+        boundary_map.push((offset + ch.len_utf8(), text.len()));
+    }
+    SanitizedArgs { text, boundary_map }
+}
+
+fn map_sanitized_offset(boundary_map: &[(usize, usize)], offset: usize) -> usize {
+    boundary_map
+        .iter()
+        .find(|(source, _)| *source == offset)
+        .map(|(_, target)| *target)
+        .unwrap_or(offset)
 }
 
 #[cfg(test)]
@@ -488,6 +548,19 @@ mod tests {
         assert!(mode_developer_instructions(ModeKind::Default).is_some());
         assert!(mode_developer_instructions(ModeKind::Plan).is_some());
         assert!(mode_developer_instructions(ModeKind::ConversationPlan).is_some());
-        assert_eq!(mode_developer_instructions(ModeKind::Execute), None);
+        assert!(mode_developer_instructions(ModeKind::Execute).is_some());
+    }
+
+    #[test]
+    fn workflow_prompt_preserves_inline_text_elements() {
+        let rendered = render_workflow_prompt_with_elements(
+            GsdWorkflowCommand::PlanPhase,
+            "@build --full",
+            &[TextElement::new((0..6).into(), Some("@build".to_string()))],
+        );
+
+        assert_eq!(rendered.text_elements.len(), 1);
+        let range = rendered.text_elements[0].byte_range;
+        assert_eq!(&rendered.text[range.start..range.end], "@build");
     }
 }

@@ -1,8 +1,10 @@
 use std::process::Stdio;
 use std::sync::Arc;
+use std::time::Duration;
 
 use tokio::io::AsyncWriteExt;
 use tokio::process::Command;
+use tokio::time::timeout;
 
 use super::types::Hook;
 use super::types::HookEvent;
@@ -10,6 +12,8 @@ use super::types::HookOutcome;
 use super::types::HookPayload;
 use super::user_notification::notify_hook;
 use crate::config::Config;
+
+const HOOK_COMMAND_TIMEOUT: Duration = Duration::from_secs(10);
 
 #[derive(Default, Clone)]
 pub(crate) struct Hooks {
@@ -47,11 +51,18 @@ fn command_hook(argv: Vec<String>) -> Hook {
                 let Ok(mut child) = command.spawn() else {
                     return HookOutcome::Continue;
                 };
-                if let Some(mut stdin) = child.stdin.take() {
-                    let _ = stdin.write_all(json.as_bytes()).await;
-                    let _ = stdin.shutdown().await;
+                let run_result = timeout(HOOK_COMMAND_TIMEOUT, async {
+                    if let Some(mut stdin) = child.stdin.take() {
+                        let _ = stdin.write_all(json.as_bytes()).await;
+                        let _ = stdin.shutdown().await;
+                    }
+                    let _ = child.wait().await;
+                })
+                .await;
+                if run_result.is_err() {
+                    let _ = child.kill().await;
+                    let _ = child.wait().await;
                 }
-                let _ = child.wait().await;
                 HookOutcome::Continue
             })
         }),
@@ -293,10 +304,22 @@ mod tests {
     #[test]
     fn hooks_new_loads_all_configured_command_groups() {
         let mut config = test_config();
-        config.hooks.after_agent = vec![vec!["echo".to_string(), "agent".to_string()]];
-        config.hooks.after_tool = vec![vec!["echo".to_string(), "tool".to_string()]];
-        config.hooks.session_start = vec![vec!["echo".to_string(), "start".to_string()]];
-        config.hooks.session_resume = vec![vec!["echo".to_string(), "resume".to_string()]];
+        config.hooks.after_agent = vec![
+            vec!["echo".to_string(), "agent".to_string()],
+            vec!["".to_string()],
+        ];
+        config.hooks.after_tool = vec![
+            vec!["echo".to_string(), "tool".to_string()],
+            vec!["".to_string()],
+        ];
+        config.hooks.session_start = vec![
+            vec!["echo".to_string(), "start".to_string()],
+            vec!["".to_string()],
+        ];
+        config.hooks.session_resume = vec![
+            vec!["echo".to_string(), "resume".to_string()],
+            vec!["".to_string()],
+        ];
 
         let hooks = Hooks::new(&config);
 
@@ -309,6 +332,7 @@ mod tests {
     #[test]
     fn hooks_new_keeps_legacy_notify_on_after_agent() {
         let mut config = test_config();
+        config.hooks.after_agent = vec![vec!["".to_string()]];
         config.notify = Some(vec!["notify-send".to_string()]);
 
         let hooks = Hooks::new(&config);

@@ -10,11 +10,13 @@ use crate::error::Result as CoreResult;
 use crate::features::Feature;
 use crate::model_provider_info::ModelProviderInfo;
 use crate::models_manager::collaboration_mode_presets::builtin_collaboration_mode_presets;
+use crate::models_manager::collaboration_mode_presets::builtin_internal_collaboration_mode_presets;
 use crate::models_manager::model_info;
 use crate::models_manager::model_presets::builtin_model_presets;
 use codex_api::ModelsClient;
 use codex_api::ReqwestTransport;
 use codex_protocol::config_types::CollaborationModeMask;
+use codex_protocol::config_types::ModeKind;
 use codex_protocol::openai_models::ModelInfo;
 use codex_protocol::openai_models::ModelPreset;
 use codex_protocol::openai_models::ModelsResponse;
@@ -93,6 +95,13 @@ impl ModelsManager {
     /// Returns a static set of presets seeded with the configured model.
     pub fn list_collaboration_modes(&self) -> Vec<CollaborationModeMask> {
         builtin_collaboration_mode_presets()
+    }
+
+    pub fn find_collaboration_mode(&self, kind: ModeKind) -> Option<CollaborationModeMask> {
+        builtin_collaboration_mode_presets()
+            .into_iter()
+            .chain(builtin_internal_collaboration_mode_presets())
+            .find(|mask| mask.mode == Some(kind))
     }
 
     /// Attempt to list models without blocking, using the current cached state.

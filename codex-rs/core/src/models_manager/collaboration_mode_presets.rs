@@ -7,12 +7,11 @@ const KNOWN_MODE_NAMES_PLACEHOLDER: &str = "{{KNOWN_MODE_NAMES}}";
 const REQUEST_USER_INPUT_AVAILABILITY_PLACEHOLDER: &str = "{{REQUEST_USER_INPUT_AVAILABILITY}}";
 
 pub(super) fn builtin_collaboration_mode_presets() -> Vec<CollaborationModeMask> {
-    vec![
-        plan_preset(),
-        default_preset(),
-        conversation_plan_preset(),
-        execute_preset(),
-    ]
+    vec![plan_preset(), default_preset()]
+}
+
+pub(super) fn builtin_internal_collaboration_mode_presets() -> Vec<CollaborationModeMask> {
+    vec![conversation_plan_preset(), execute_preset()]
 }
 
 #[cfg(any(test, feature = "test-support"))]
@@ -128,5 +127,23 @@ mod tests {
         assert!(!default_instructions.contains(KNOWN_MODE_NAMES_PLACEHOLDER));
         assert!(!default_instructions.contains(REQUEST_USER_INPUT_AVAILABILITY_PLACEHOLDER));
         assert!(default_instructions.contains("request_user_input"));
+    }
+
+    #[test]
+    fn builtin_presets_exclude_hidden_modes() {
+        let visible_modes: Vec<ModeKind> = builtin_collaboration_mode_presets()
+            .into_iter()
+            .filter_map(|preset| preset.mode)
+            .collect();
+        assert_eq!(visible_modes, vec![ModeKind::Plan, ModeKind::Default]);
+
+        let hidden_modes: Vec<ModeKind> = builtin_internal_collaboration_mode_presets()
+            .into_iter()
+            .filter_map(|preset| preset.mode)
+            .collect();
+        assert_eq!(
+            hidden_modes,
+            vec![ModeKind::ConversationPlan, ModeKind::Execute]
+        );
     }
 }
