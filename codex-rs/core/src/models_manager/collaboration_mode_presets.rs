@@ -139,4 +139,18 @@ mod tests {
                 .contains("Do not use `request_user_input` for simple formatting demos")
         );
     }
+
+    #[test]
+    fn plan_mode_instructions_recommend_mermaid_for_structural_changes() {
+        let plan_instructions = plan_preset()
+            .developer_instructions
+            .expect("plan preset should include instructions")
+            .expect("plan instructions should be set");
+
+        assert!(plan_instructions.contains("Use Mermaid diagrams"));
+        assert!(plan_instructions.contains("flowchart"));
+        assert!(plan_instructions.contains("sequenceDiagram"));
+        assert!(plan_instructions.contains("stateDiagram-v2"));
+        assert!(plan_instructions.contains("show the source and destination explicitly"));
+    }
 }

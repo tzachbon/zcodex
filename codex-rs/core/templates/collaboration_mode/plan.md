@@ -132,6 +132,23 @@ plan content should be human and agent digestible. The final plan must be plan-o
 * Test cases and scenarios
 * Explicit assumptions and defaults chosen where needed
 
+Use Mermaid diagrams when they clarify the plan better than prose alone. Be selective and use them only when they add signal.
+
+Prefer Mermaid for:
+
+* File, module, or ownership moves
+* Data flow or control flow changes
+* Before/after architecture deltas
+* State transitions, handoffs, or multi-actor interactions
+
+Choose the diagram type deliberately:
+
+* `flowchart` for structure, movement, and dependency changes
+* `sequenceDiagram` for request/response or actor handoffs
+* `stateDiagram-v2` for lifecycle or mode transitions
+
+Keep diagrams small, readable, and tightly tied to the written plan. When something is being moved or renamed, show the source and destination explicitly.
+
 Do not ask "should I proceed?" in the final output. The user can easily switch out of Plan mode and request implementation if you have included a `<proposed_plan>` block in your response. Alternatively, they can decide to stay in Plan mode and continue refining the plan.
 
 Only produce at most one `<proposed_plan>` block per turn, and only when you are presenting a complete spec.
