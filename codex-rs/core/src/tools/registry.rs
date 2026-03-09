@@ -282,6 +282,7 @@ impl ToolRegistry {
             if let Some(interceptor) = list.first() {
                 let next_handler = handler.clone();
                 let call_id_owned = invocation.call_id.clone();
+                let output_cell = tokio::sync::Mutex::new(None);
                 let result = otel
                     .log_tool_result_with_tags(
                         tool_name.as_ref(),
@@ -291,6 +292,7 @@ impl ToolRegistry {
                         || {
                             let interceptor = interceptor.clone();
                             let next_handler = next_handler.clone();
+                            let output_cell = &output_cell;
                             let invocation = invocation.clone();
                             async move {
                                 let next = move |inv: ToolInvocation| {
@@ -314,6 +316,8 @@ impl ToolRegistry {
                                     Ok(output) => {
                                         let preview = output.log_preview();
                                         let success = output.success_for_logging();
+                                        let mut guard = output_cell.lock().await;
+                                        *guard = Some(output);
                                         Ok((preview, success))
                                     }
                                     Err(err) => Err(err),
@@ -325,11 +329,12 @@ impl ToolRegistry {
 
                 return match result {
                     Ok(_) => {
-                        // We need to re-run the interceptor to actually get the ToolOutput to return.
-                        // To avoid double-call, simply call the handler and ignore preview/success;
-                        // The otel log already captured the metadata.
-                        wait_for_tool_gate_if_needed(&handler, &invocation).await;
-                        let out = handler.handle(invocation).await?;
+                        let mut guard = output_cell.lock().await;
+                        let out = guard.take().ok_or_else(|| {
+                            FunctionCallError::Fatal(
+                                "interceptor produced no tool output".to_string(),
+                            )
+                        })?;
                         dispatch_after_tool_hook(
                             hook_session.as_ref(),
                             hook_turn.as_ref(),

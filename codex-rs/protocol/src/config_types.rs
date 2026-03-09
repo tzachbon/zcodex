@@ -182,7 +182,6 @@ pub enum ModeKind {
     )]
     Default,
     #[doc(hidden)]
-    #[serde(skip_serializing, skip_deserializing)]
     #[schemars(skip)]
     #[ts(skip)]
     ConversationPlan,
@@ -350,6 +349,24 @@ mod tests {
             let mode: ModeKind = serde_json::from_str(&json).expect("deserialize mode");
             assert_eq!(ModeKind::Default, mode);
         }
+    }
+
+    #[test]
+    fn collaboration_mode_roundtrips_conversation_plan() {
+        let mode = CollaborationMode {
+            mode: ModeKind::ConversationPlan,
+            settings: Settings {
+                model: "gpt-5.2-codex".to_string(),
+                reasoning_effort: Some(ReasoningEffort::Medium),
+                developer_instructions: Some("conversation plan".to_string()),
+            },
+        };
+
+        let json = serde_json::to_string(&mode).expect("serialize collaboration mode");
+        let decoded: CollaborationMode =
+            serde_json::from_str(&json).expect("deserialize collaboration mode");
+
+        assert_eq!(decoded, mode);
     }
 
     #[test]

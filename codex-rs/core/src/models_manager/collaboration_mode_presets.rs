@@ -7,7 +7,12 @@ const KNOWN_MODE_NAMES_PLACEHOLDER: &str = "{{KNOWN_MODE_NAMES}}";
 const REQUEST_USER_INPUT_AVAILABILITY_PLACEHOLDER: &str = "{{REQUEST_USER_INPUT_AVAILABILITY}}";
 
 pub(super) fn builtin_collaboration_mode_presets() -> Vec<CollaborationModeMask> {
-    vec![plan_preset(), default_preset(), conversation_plan_preset()]
+    vec![
+        plan_preset(),
+        default_preset(),
+        conversation_plan_preset(),
+        execute_preset(),
+    ]
 }
 
 #[cfg(any(test, feature = "test-support"))]
@@ -23,7 +28,7 @@ fn plan_preset() -> CollaborationModeMask {
         reasoning_effort: Some(Some(ReasoningEffort::Medium)),
         developer_instructions: Some(Some(
             crate::gsd::mode_developer_instructions(ModeKind::Plan)
-                .unwrap_or_default()
+                .expect("missing GSD plan instructions")
                 .to_string(),
         )),
     }
@@ -44,7 +49,7 @@ fn default_mode_instructions() -> String {
     let request_user_input_availability =
         request_user_input_availability_message(ModeKind::Default);
     crate::gsd::mode_developer_instructions(ModeKind::Default)
-        .unwrap_or_default()
+        .expect("missing GSD default instructions")
         .replace(KNOWN_MODE_NAMES_PLACEHOLDER, &known_mode_names)
         .replace(
             REQUEST_USER_INPUT_AVAILABILITY_PLACEHOLDER,
@@ -60,7 +65,21 @@ fn conversation_plan_preset() -> CollaborationModeMask {
         reasoning_effort: Some(Some(ReasoningEffort::Medium)),
         developer_instructions: Some(Some(
             crate::gsd::mode_developer_instructions(ModeKind::ConversationPlan)
-                .unwrap_or_default()
+                .expect("missing GSD conversation plan instructions")
+                .to_string(),
+        )),
+    }
+}
+
+fn execute_preset() -> CollaborationModeMask {
+    CollaborationModeMask {
+        name: ModeKind::Execute.display_name().to_string(),
+        mode: Some(ModeKind::Execute),
+        model: None,
+        reasoning_effort: Some(Some(ReasoningEffort::Medium)),
+        developer_instructions: Some(Some(
+            crate::gsd::mode_developer_instructions(ModeKind::Execute)
+                .expect("missing GSD execute instructions")
                 .to_string(),
         )),
     }
@@ -106,5 +125,8 @@ mod tests {
             .expect("default instructions should be set");
 
         assert!(!default_instructions.is_empty());
+        assert!(!default_instructions.contains(KNOWN_MODE_NAMES_PLACEHOLDER));
+        assert!(!default_instructions.contains(REQUEST_USER_INPUT_AVAILABILITY_PLACEHOLDER));
+        assert!(default_instructions.contains("request_user_input"));
     }
 }

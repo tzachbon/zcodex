@@ -47,14 +47,11 @@ fn command_hook(argv: Vec<String>) -> Hook {
                 let Ok(mut child) = command.spawn() else {
                     return HookOutcome::Continue;
                 };
-                let stdin = child.stdin.take();
-                tokio::spawn(async move {
-                    if let Some(mut stdin) = stdin {
-                        let _ = stdin.write_all(json.as_bytes()).await;
-                        let _ = stdin.shutdown().await;
-                    }
-                    let _ = child.wait().await;
-                });
+                if let Some(mut stdin) = child.stdin.take() {
+                    let _ = stdin.write_all(json.as_bytes()).await;
+                    let _ = stdin.shutdown().await;
+                }
+                let _ = child.wait().await;
                 HookOutcome::Continue
             })
         }),
@@ -72,7 +69,7 @@ impl Hooks {
             .hooks
             .after_agent
             .iter()
-            .filter(|argv| !argv.is_empty())
+            .filter(|argv| argv.first().is_some_and(|program| !program.is_empty()))
             .cloned()
             .map(command_hook)
             .collect();
@@ -81,7 +78,7 @@ impl Hooks {
             .hooks
             .after_tool
             .iter()
-            .filter(|argv| !argv.is_empty())
+            .filter(|argv| argv.first().is_some_and(|program| !program.is_empty()))
             .cloned()
             .map(command_hook)
             .collect();
@@ -89,7 +86,7 @@ impl Hooks {
             .hooks
             .session_start
             .iter()
-            .filter(|argv| !argv.is_empty())
+            .filter(|argv| argv.first().is_some_and(|program| !program.is_empty()))
             .cloned()
             .map(command_hook)
             .collect();
@@ -97,7 +94,7 @@ impl Hooks {
             .hooks
             .session_resume
             .iter()
-            .filter(|argv| !argv.is_empty())
+            .filter(|argv| argv.first().is_some_and(|program| !program.is_empty()))
             .cloned()
             .map(command_hook)
             .collect();

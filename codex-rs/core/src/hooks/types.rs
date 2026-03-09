@@ -224,4 +224,34 @@ mod tests {
 
         assert_eq!(actual, expected);
     }
+
+    #[test]
+    fn hook_payload_supports_session_resume_events() {
+        let session_id = ThreadId::new();
+        let thread_id = ThreadId::new();
+        let payload = HookPayload {
+            session_id,
+            cwd: PathBuf::from("tmp"),
+            triggered_at: Utc
+                .with_ymd_and_hms(2025, 1, 1, 0, 0, 0)
+                .single()
+                .expect("valid timestamp"),
+            hook_event: HookEvent::SessionResume {
+                event: HookEventSessionLifecycle { thread_id },
+            },
+        };
+
+        let actual = serde_json::to_value(payload).expect("serialize hook payload");
+        let expected = json!({
+            "session_id": session_id.to_string(),
+            "cwd": "tmp",
+            "triggered_at": "2025-01-01T00:00:00Z",
+            "hook_event": {
+                "event_type": "session_resume",
+                "thread_id": thread_id.to_string(),
+            },
+        });
+
+        assert_eq!(actual, expected);
+    }
 }

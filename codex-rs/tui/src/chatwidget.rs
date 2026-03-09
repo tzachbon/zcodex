@@ -3490,12 +3490,9 @@ impl ChatWidget {
     }
 
     fn collaboration_mask_for_kind(&self, kind: ModeKind) -> Option<CollaborationModeMask> {
-        match kind {
-            ModeKind::ConversationPlan => {
-                collaboration_modes::hidden_mask_for_kind(self.models_manager.as_ref(), kind)
-            }
-            _ => collaboration_modes::mask_for_kind(self.models_manager.as_ref(), kind),
-        }
+        collaboration_modes::mask_for_kind(self.models_manager.as_ref(), kind).or_else(|| {
+            collaboration_modes::hidden_mask_for_kind(self.models_manager.as_ref(), kind)
+        })
     }
 
     fn run_gsd_workflow_command(&mut self, workflow: GsdWorkflowCommand, args: String) {
@@ -3510,7 +3507,12 @@ impl ChatWidget {
     }
 
     fn has_gsd_project_state(&self) -> bool {
-        self.config.cwd.join(GSD_PROJECT_PATH).exists()
+        self.current_cwd
+            .as_ref()
+            .filter(|cwd| !cwd.as_os_str().is_empty())
+            .unwrap_or(&self.config.cwd)
+            .join(GSD_PROJECT_PATH)
+            .exists()
     }
 
     fn open_plan_hub(&mut self) {

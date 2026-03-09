@@ -1198,7 +1198,7 @@ impl Session {
         match conversation_history {
             InitialHistory::New => {
                 // Build and record initial items (user instructions + environment context)
-                let items = self.build_initial_context(&turn_context).await;
+                let items = self.build_live_initial_context(&turn_context).await;
                 self.record_conversation_items(&turn_context, &items).await;
                 {
                     let mut state = self.state.lock().await;
@@ -1277,7 +1277,7 @@ impl Session {
                 }
 
                 // Append the current session's initial context after the reconstructed history.
-                let initial_context = self.build_initial_context(&turn_context).await;
+                let initial_context = self.build_live_initial_context(&turn_context).await;
                 self.record_conversation_items(&turn_context, &initial_context)
                     .await;
                 {
@@ -1992,7 +1992,7 @@ impl Session {
                     } else {
                         let user_messages = collect_user_messages(history.raw_items());
                         let rebuilt = compact::build_compacted_history(
-                            self.build_initial_context(turn_context).await,
+                            self.build_live_initial_context(turn_context).await,
                             &user_messages,
                             &compacted.message,
                         );
@@ -2049,7 +2049,7 @@ impl Session {
             state.initial_context_seeded = true;
         }
 
-        let initial_context = self.build_initial_context(turn_context).await;
+        let initial_context = self.build_live_initial_context(turn_context).await;
         self.record_conversation_items(turn_context, &initial_context)
             .await;
         self.flush_rollout().await;
@@ -2087,9 +2087,10 @@ impl Session {
         }
     }
 
-    pub(crate) async fn build_initial_context(
+    async fn build_initial_context_with_options(
         &self,
         turn_context: &TurnContext,
+        include_gsd: bool,
     ) -> Vec<ResponseItem> {
         let mut items = Vec::<ResponseItem>::with_capacity(4);
         let shell = self.user_shell();
@@ -2106,10 +2107,12 @@ impl Session {
         if let Some(developer_instructions) = turn_context.developer_instructions.as_deref() {
             items.push(DeveloperInstructions::new(developer_instructions.to_string()).into());
         }
-        items.push(
-            DeveloperInstructions::new(crate::gsd::global_developer_instructions().to_string())
-                .into(),
-        );
+        if include_gsd {
+            items.push(
+                DeveloperInstructions::new(crate::gsd::global_developer_instructions().to_string())
+                    .into(),
+            );
+        }
         // Add developer instructions from collaboration_mode if they exist and are non-empty
         let (collaboration_mode, base_instructions) = {
             let state = self.state.lock().await;
@@ -2152,6 +2155,22 @@ impl Session {
             shell.as_ref().clone(),
         )));
         items
+    }
+
+    pub(crate) async fn build_initial_context(
+        &self,
+        turn_context: &TurnContext,
+    ) -> Vec<ResponseItem> {
+        self.build_initial_context_with_options(turn_context, false)
+            .await
+    }
+
+    pub(crate) async fn build_live_initial_context(
+        &self,
+        turn_context: &TurnContext,
+    ) -> Vec<ResponseItem> {
+        self.build_initial_context_with_options(turn_context, true)
+            .await
     }
 
     pub(crate) async fn persist_rollout_items(&self, items: &[RolloutItem]) {

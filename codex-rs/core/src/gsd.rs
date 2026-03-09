@@ -4,6 +4,7 @@ const GSD_CORE_PROMPT: &str = include_str!("../templates/gsd/core.md");
 const GSD_DEFAULT_PROMPT: &str = include_str!("../templates/gsd/default.md");
 const GSD_PLAN_PROMPT: &str = include_str!("../templates/gsd/plan.md");
 const GSD_CONVERSATION_PLAN_PROMPT: &str = include_str!("../templates/gsd/conversation_plan.md");
+const GSD_EXECUTE_PROMPT: &str = include_str!("../templates/collaboration_mode/execute.md");
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum GsdWorkflowCommand {
@@ -106,7 +107,7 @@ impl GsdWorkflowCommand {
                 upstream_name: "execute-phase",
                 objective: "Execute the current planned phase with GSD discipline, preserving state transitions and verification checkpoints.",
                 next_step: Some("/verify-work"),
-                preferred_mode: None,
+                preferred_mode: Some(ModeKind::Execute),
                 planning_only: false,
             },
             Self::VerifyWork => WorkflowMeta {
@@ -114,7 +115,7 @@ impl GsdWorkflowCommand {
                 upstream_name: "verify-work",
                 objective: "Run the GSD verification flow for the requested work and record the outcome in the planning state.",
                 next_step: Some("/progress"),
-                preferred_mode: None,
+                preferred_mode: Some(ModeKind::Execute),
                 planning_only: false,
             },
             Self::AuditMilestone => WorkflowMeta {
@@ -322,13 +323,14 @@ pub fn mode_developer_instructions(mode: ModeKind) -> Option<&'static str> {
         ModeKind::Default => Some(GSD_DEFAULT_PROMPT),
         ModeKind::Plan => Some(GSD_PLAN_PROMPT),
         ModeKind::ConversationPlan => Some(GSD_CONVERSATION_PLAN_PROMPT),
-        ModeKind::PairProgramming | ModeKind::Execute => None,
+        ModeKind::Execute => Some(GSD_EXECUTE_PROMPT),
+        ModeKind::PairProgramming => None,
     }
 }
 
 pub fn render_workflow_prompt(command: GsdWorkflowCommand, args: &str) -> String {
     let meta = command.meta();
-    let trimmed_args = args.trim();
+    let trimmed_args = sanitize_args_for_prompt(args);
     let args_summary = if trimmed_args.is_empty() {
         "No inline arguments were provided.".to_string()
     } else {
@@ -378,6 +380,20 @@ Keep the `.planning/` state coherent with the work you perform.
         plan_only = plan_only,
         next_step = next_step,
     )
+}
+
+fn sanitize_args_for_prompt(args: &str) -> String {
+    args.trim()
+        .chars()
+        .map(|ch| match ch {
+            '`' => "\\`".to_string(),
+            '\n' => "\\n".to_string(),
+            '\r' => "\\r".to_string(),
+            '\t' => "\\t".to_string(),
+            ch if ch.is_control() => " ".to_string(),
+            ch => ch.to_string(),
+        })
+        .collect()
 }
 
 #[cfg(test)]
@@ -444,6 +460,13 @@ mod tests {
         assert!(prompt.contains("visible_name: /execute-phase"));
         assert!(prompt.contains("Carry the workflow through its normal execution path."));
         assert!(!prompt.contains("Stop after the planning artifacts"));
+    }
+
+    #[test]
+    fn workflow_prompt_sanitizes_backticks_and_newlines() {
+        let prompt =
+            render_workflow_prompt(GsdWorkflowCommand::PlanPhase, "1 `quoted`\nnext\tline");
+        assert!(prompt.contains("Inline arguments: `1 \\`quoted\\`\\nnext\\tline`."));
     }
 
     #[test]
