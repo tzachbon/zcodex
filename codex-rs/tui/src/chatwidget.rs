@@ -1795,10 +1795,12 @@ impl ChatWidget {
 
     fn on_view_image_tool_call(&mut self, event: ViewImageToolCallEvent) {
         self.flush_answer_stream_with_separator();
+        let path = event.path;
         self.add_to_history(history_cell::new_view_image_tool_call(
-            event.path,
+            path.clone(),
             &self.config.cwd,
         ));
+        self.app_event_tx.send(AppEvent::PreviewImage { path });
         self.request_redraw();
     }
 

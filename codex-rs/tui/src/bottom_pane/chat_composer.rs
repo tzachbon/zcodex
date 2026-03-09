@@ -574,7 +574,9 @@ impl ChatComposer {
                 tracing::debug!("image dimensions={}x{}", width, height);
                 let format = pasted_image_format(&path_buf);
                 tracing::debug!("attached image format={}", format.label());
-                self.attach_image(path_buf);
+                self.attach_image(path_buf.clone());
+                self.app_event_tx
+                    .send(AppEvent::PreviewImage { path: path_buf });
                 true
             }
             Err(err) => {
@@ -1389,7 +1391,9 @@ impl ChatComposer {
                             self.textarea.replace_range(start_idx..end_idx, "");
                             self.textarea.set_cursor(start_idx);
 
-                            self.attach_image(path_buf);
+                            self.attach_image(path_buf.clone());
+                            self.app_event_tx
+                                .send(AppEvent::PreviewImage { path: path_buf });
                             // Add a trailing space to keep typing fluid.
                             self.textarea.insert_str(" ");
                         }
@@ -7384,5 +7388,33 @@ mod tests {
             height: 5,
         };
         assert_eq!(composer.cursor_pos(area), None);
+    }
+
+    #[test]
+    fn handle_paste_image_path_requests_preview() {
+        let dir = tempdir().unwrap();
+        let image_path = dir.path().join("image.png");
+        ImageBuffer::from_pixel(4, 4, Rgba([255u8, 0, 0, 255]))
+            .save(&image_path)
+            .unwrap();
+
+        let (tx, mut rx) = unbounded_channel::<AppEvent>();
+        let sender = AppEventSender::new(tx);
+        let mut composer = ChatComposer::new(
+            true,
+            sender,
+            false,
+            "Ask Codex to do anything".to_string(),
+            false,
+        );
+
+        assert!(composer.handle_paste_image_path(image_path.to_string_lossy().to_string()));
+        assert_eq!(
+            match rx.try_recv().expect("expected preview event") {
+                AppEvent::PreviewImage { path } => Some(path),
+                _ => None,
+            },
+            Some(image_path)
+        );
     }
 }

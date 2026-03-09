@@ -3110,14 +3110,28 @@ async fn view_image_tool_call_adds_history_cell() {
         id: "sub-image".into(),
         msg: EventMsg::ViewImageToolCall(ViewImageToolCallEvent {
             call_id: "call-image".into(),
-            path: image_path,
+            path: image_path.clone(),
         }),
     });
 
-    let cells = drain_insert_history(&mut rx);
-    assert_eq!(cells.len(), 1, "expected a single history cell");
-    let combined = lines_to_single_string(&cells[0]);
+    let mut history_cells = Vec::new();
+    let mut preview_path = None;
+    loop {
+        match rx.try_recv() {
+            Ok(AppEvent::InsertHistoryCell(cell)) => history_cells.push(cell.display_lines(80)),
+            Ok(AppEvent::PreviewImage { path }) => {
+                preview_path = Some(path);
+            }
+            Err(TryRecvError::Empty) => break,
+            Ok(other) => panic!("unexpected app event: {other:?}"),
+            Err(TryRecvError::Disconnected) => panic!("app event channel disconnected"),
+        }
+    }
+
+    assert_eq!(history_cells.len(), 1, "expected a single history cell");
+    let combined = lines_to_single_string(&history_cells[0]);
     assert_snapshot!("local_image_attachment_history_snapshot", combined);
+    assert_eq!(preview_path, Some(image_path));
 }
 
 // Snapshot test: interrupting a running exec finalizes the active cell with a red ✗

@@ -227,6 +227,12 @@ pub struct Config {
     /// Ordered list of status line item identifiers for the TUI.
     pub tui_status_line: Option<Vec<String>>,
 
+    /// Enable best-effort terminal image preview via `timg`.
+    pub tui_image_preview: bool,
+
+    /// Override the command used for terminal image preview.
+    pub tui_image_preview_command: Option<String>,
+
     /// The directory that should be treated as the current working directory
     /// for the session. All relative paths inside the business-logic layer are
     /// resolved against this path.
@@ -1712,6 +1718,17 @@ impl Config {
                 .map(|t| t.alternate_screen)
                 .unwrap_or_default(),
             tui_status_line: cfg.tui.as_ref().and_then(|t| t.status_line.clone()),
+            tui_image_preview: cfg.tui.as_ref().map(|t| t.image_preview).unwrap_or(true),
+            tui_image_preview_command: cfg.tui.as_ref().and_then(|t| {
+                t.image_preview_command.as_ref().and_then(|command| {
+                    let trimmed = command.trim();
+                    if trimmed.is_empty() {
+                        None
+                    } else {
+                        Some(trimmed.to_string())
+                    }
+                })
+            }),
             otel: {
                 let t: OtelConfigToml = cfg.otel.unwrap_or_default();
                 let log_user_prompt = t.log_user_prompt.unwrap_or(false);
@@ -1948,6 +1965,8 @@ persistence = "none"
                 experimental_mode: None,
                 alternate_screen: AltScreenMode::Auto,
                 status_line: None,
+                image_preview: true,
+                image_preview_command: None,
             }
         );
     }
@@ -3891,6 +3910,8 @@ model_verbosity = "high"
                 feedback_enabled: true,
                 tui_alternate_screen: AltScreenMode::Auto,
                 tui_status_line: None,
+                tui_image_preview: true,
+                tui_image_preview_command: None,
                 otel: OtelConfig::default(),
             },
             o3_profile_config
@@ -3978,6 +3999,8 @@ model_verbosity = "high"
             feedback_enabled: true,
             tui_alternate_screen: AltScreenMode::Auto,
             tui_status_line: None,
+            tui_image_preview: true,
+            tui_image_preview_command: None,
             otel: OtelConfig::default(),
         };
 
@@ -4080,6 +4103,8 @@ model_verbosity = "high"
             feedback_enabled: true,
             tui_alternate_screen: AltScreenMode::Auto,
             tui_status_line: None,
+            tui_image_preview: true,
+            tui_image_preview_command: None,
             otel: OtelConfig::default(),
         };
 
@@ -4168,6 +4193,8 @@ model_verbosity = "high"
             feedback_enabled: true,
             tui_alternate_screen: AltScreenMode::Auto,
             tui_status_line: None,
+            tui_image_preview: true,
+            tui_image_preview_command: None,
             otel: OtelConfig::default(),
         };
 

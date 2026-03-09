@@ -22,6 +22,8 @@ use crate::history_cell;
 use crate::history_cell::HistoryCell;
 #[cfg(not(debug_assertions))]
 use crate::history_cell::UpdateAvailableHistoryCell;
+use crate::image_preview;
+use crate::image_preview::ImagePreviewOutcome;
 use crate::model_migration::ModelMigrationOutcome;
 use crate::model_migration::migration_copy_for_models;
 use crate::model_migration::run_model_migration_prompt;
@@ -1514,6 +1516,9 @@ impl App {
                     }
                 }
             }
+            AppEvent::PreviewImage { path } => {
+                self.preview_image(tui, path).await;
+            }
             AppEvent::StartCommitAnimation => {
                 if self
                     .commit_anim_running
@@ -2404,6 +2409,28 @@ impl App {
             Personality::None => "None",
             Personality::Friendly => "Friendly",
             Personality::Pragmatic => "Pragmatic",
+        }
+    }
+
+    async fn preview_image(&mut self, tui: &mut tui::Tui, path: PathBuf) {
+        match image_preview::preview_image(tui, &self.config, &path).await {
+            ImagePreviewOutcome::Shown | ImagePreviewOutcome::SkippedDisabled => {}
+            ImagePreviewOutcome::MissingPath => {
+                tracing::debug!(path = %path.display(), "skipping image preview for missing path");
+            }
+            ImagePreviewOutcome::MissingBinary => {
+                self.chat_widget.add_info_message(
+                    image_preview::IMAGE_PREVIEW_FAILURE_TITLE.to_string(),
+                    Some(image_preview::IMAGE_PREVIEW_INSTALL_HINT.to_string()),
+                );
+            }
+            ImagePreviewOutcome::Failed(err) => {
+                tracing::warn!(error = %err, path = %path.display(), "image preview failed");
+                self.chat_widget.add_info_message(
+                    image_preview::IMAGE_PREVIEW_FAILURE_TITLE.to_string(),
+                    Some(image_preview::IMAGE_PREVIEW_INSTALL_HINT.to_string()),
+                );
+            }
         }
     }
 
