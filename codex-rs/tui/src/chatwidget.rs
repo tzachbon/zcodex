@@ -2943,6 +2943,17 @@ impl ChatWidget {
                 self.cycle_collaboration_mode();
             }
             KeyEvent {
+                code: KeyCode::Char(c),
+                modifiers: KeyModifiers::ALT,
+                kind: KeyEventKind::Press,
+                ..
+            } if c.eq_ignore_ascii_case(&'p')
+                && !self.bottom_pane.is_task_running()
+                && self.bottom_pane.no_modal_or_popup_active() =>
+            {
+                self.open_reasoning_popup_for_current_model();
+            }
+            KeyEvent {
                 code: KeyCode::Up,
                 modifiers: KeyModifiers::ALT,
                 kind: KeyEventKind::Press,
@@ -4484,6 +4495,46 @@ impl ChatWidget {
             return;
         }
         self.open_personality_popup_for_current_model();
+    }
+
+    fn current_model_preset(&self) -> Result<Option<ModelPreset>, ()> {
+        let current_model = self.current_model();
+        let presets = self
+            .models_manager
+            .try_list_models(&self.config)
+            .map_err(|_| ())?;
+        Ok(presets
+            .into_iter()
+            .find(|preset| preset.show_in_picker && preset.model.as_str() == current_model))
+    }
+
+    fn open_reasoning_popup_for_current_model(&mut self) {
+        if !self.is_session_configured() {
+            self.add_info_message(
+                "Reasoning selection is disabled until startup completes.".to_string(),
+                None,
+            );
+            return;
+        }
+
+        match self.current_model_preset() {
+            Ok(Some(preset)) => self.open_reasoning_popup(preset),
+            Ok(None) => {
+                let current_model = self.current_model();
+                self.add_info_message(
+                    format!(
+                        "Reasoning selection is unavailable for current model ({current_model})."
+                    ),
+                    Some("Use /model to pick a different model.".to_string()),
+                );
+            }
+            Err(()) => {
+                self.add_info_message(
+                    "Models are being updated, please try Alt+P again in a moment.".to_string(),
+                    None,
+                );
+            }
+        }
     }
 
     fn open_personality_popup_for_current_model(&mut self) {

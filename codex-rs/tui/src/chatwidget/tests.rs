@@ -3758,6 +3758,65 @@ async fn reasoning_popup_escape_returns_to_model_popup() {
 }
 
 #[tokio::test]
+async fn alt_p_opens_reasoning_popup_for_current_model() {
+    let (mut chat, _rx, _op_rx) = make_chatwidget_manual(Some("gpt-5.1-codex-max")).await;
+    chat.thread_id = Some(ThreadId::new());
+
+    chat.handle_key_event(KeyEvent::new(KeyCode::Char('p'), KeyModifiers::ALT));
+
+    let popup = render_bottom_popup(&chat, 120);
+    assert!(popup.contains("Select Reasoning Level"));
+    assert!(popup.contains("gpt-5.1-codex-max"));
+    assert!(popup.contains("Extra high"));
+}
+
+#[tokio::test]
+async fn alt_p_does_nothing_while_task_running() {
+    let (mut chat, mut rx, _op_rx) = make_chatwidget_manual(Some("gpt-5.1-codex-max")).await;
+    chat.thread_id = Some(ThreadId::new());
+    chat.bottom_pane.set_task_running(true);
+
+    chat.handle_key_event(KeyEvent::new(KeyCode::Char('p'), KeyModifiers::ALT));
+
+    let popup = render_bottom_popup(&chat, 120);
+    assert!(!popup.contains("Select Reasoning Level"));
+    assert!(
+        rx.try_recv().is_err(),
+        "expected no app events while task is running"
+    );
+}
+
+#[tokio::test]
+async fn alt_p_does_not_interrupt_existing_popup() {
+    let (mut chat, _rx, _op_rx) = make_chatwidget_manual(Some("gpt-5.1-codex-max")).await;
+    chat.thread_id = Some(ThreadId::new());
+    chat.open_model_popup();
+
+    chat.handle_key_event(KeyEvent::new(KeyCode::Char('p'), KeyModifiers::ALT));
+
+    let popup = render_bottom_popup(&chat, 120);
+    assert!(popup.contains("Select Model"));
+    assert!(!popup.contains("Select Reasoning Level"));
+}
+
+#[tokio::test]
+async fn alt_p_reports_unknown_current_model() {
+    let (mut chat, mut rx, _op_rx) = make_chatwidget_manual(Some("unknown-model")).await;
+    chat.thread_id = Some(ThreadId::new());
+
+    chat.handle_key_event(KeyEvent::new(KeyCode::Char('p'), KeyModifiers::ALT));
+
+    let cells = drain_insert_history(&mut rx);
+    assert!(
+        !cells.is_empty(),
+        "expected a history message when reasoning selection is unavailable"
+    );
+    let blob = lines_to_single_string(cells.last().unwrap());
+    assert!(blob.contains("Reasoning selection is unavailable for current model (unknown-model)."));
+    assert!(blob.contains("Use /model to pick a different model."));
+}
+
+#[tokio::test]
 async fn exec_history_extends_previous_when_consecutive() {
     let (mut chat, _rx, _op_rx) = make_chatwidget_manual(None).await;
 
