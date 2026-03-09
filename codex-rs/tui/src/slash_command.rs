@@ -20,6 +20,7 @@ pub enum SlashCommand {
     Experimental,
     Skills,
     Review,
+    Loop,
     Rename,
     New,
     Resume,
@@ -56,6 +57,7 @@ impl SlashCommand {
             SlashCommand::Init => "create an AGENTS.md file with instructions for Codex",
             SlashCommand::Compact => "summarize conversation to prevent hitting the context limit",
             SlashCommand::Review => "review my current changes and find issues",
+            SlashCommand::Loop => "run repeated turns until done",
             SlashCommand::Rename => "rename the current thread",
             SlashCommand::Resume => "resume a saved chat",
             SlashCommand::Fork => "fork the current chat",
@@ -95,7 +97,7 @@ impl SlashCommand {
     pub fn supports_inline_args(self) -> bool {
         matches!(
             self,
-            SlashCommand::Review | SlashCommand::Rename | SlashCommand::Plan
+            SlashCommand::Review | SlashCommand::Rename | SlashCommand::Plan | SlashCommand::Loop
         )
     }
 
@@ -115,6 +117,7 @@ impl SlashCommand {
             | SlashCommand::ElevateSandbox
             | SlashCommand::Experimental
             | SlashCommand::Review
+            | SlashCommand::Loop
             | SlashCommand::Plan
             | SlashCommand::Logout => false,
             SlashCommand::Diff

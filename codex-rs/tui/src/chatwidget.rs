@@ -144,6 +144,10 @@ const PLAN_IMPLEMENTATION_TITLE: &str = "Implement this plan?";
 const PLAN_IMPLEMENTATION_YES: &str = "Yes, implement this plan";
 const PLAN_IMPLEMENTATION_NO: &str = "No, stay in Plan mode";
 const PLAN_IMPLEMENTATION_CODING_MESSAGE: &str = "Implement the plan.";
+const DEFAULT_LOOP_STOP_PHRASE: &str = "ALL_WORK_IS_DONE_AND_RESOLVED";
+const DEFAULT_LOOP_MAX_ITERATIONS: u32 = 100;
+const DEFAULT_LOOP_MAX_DURATION_SECS: u64 = 12 * 60 * 60;
+const LOOP_STOP_PHRASE_MAX_LEN: usize = 200;
 
 use crate::app_event::AppEvent;
 use crate::app_event::ConnectorsSnapshot;
@@ -164,6 +168,8 @@ use crate::bottom_pane::ExperimentalFeaturesView;
 use crate::bottom_pane::FeedbackAudience;
 use crate::bottom_pane::InputResult;
 use crate::bottom_pane::LocalImageAttachment;
+use crate::bottom_pane::LoopIndicatorState;
+use crate::bottom_pane::LoopIndicatorStatus;
 use crate::bottom_pane::QUIT_SHORTCUT_TIMEOUT;
 use crate::bottom_pane::SelectionAction;
 use crate::bottom_pane::SelectionItem;
@@ -229,6 +235,9 @@ use codex_protocol::openai_models::InputModality;
 use codex_protocol::openai_models::ModelPreset;
 use codex_protocol::openai_models::ReasoningEffort as ReasoningEffortConfig;
 use codex_protocol::plan_tool::UpdatePlanArgs;
+use codex_protocol::protocol::LoopConfig;
+use codex_protocol::protocol::LoopState;
+use codex_protocol::protocol::LoopStopReason;
 use strum::IntoEnumIterator;
 
 const USER_SHELL_COMMAND_HELP_TITLE: &str = "Prefix a command with ! to run it locally";
@@ -250,6 +259,27 @@ struct UnifiedExecProcessSummary {
 
 struct UnifiedExecWaitState {
     command_display: String,
+}
+
+#[derive(Clone, Debug)]
+struct ActiveLoopSession {
+    state: LoopState,
+    started_at: Instant,
+    awaiting_followup_submit: bool,
+}
+
+impl ActiveLoopSession {
+    fn indicator(&self) -> LoopIndicatorState {
+        LoopIndicatorState {
+            iteration: self.state.iteration,
+            max_iterations: self.state.config.max_iterations,
+            status: if self.state.iteration == 0 {
+                LoopIndicatorStatus::Pending
+            } else {
+                LoopIndicatorStatus::Running
+            },
+        }
+    }
 }
 
 impl UnifiedExecWaitState {
@@ -550,6 +580,7 @@ pub(crate) struct ChatWidget {
     suppress_session_configured_redraw: bool,
     // User messages queued while a turn is in progress
     queued_user_messages: VecDeque<UserMessage>,
+    active_loop: Option<ActiveLoopSession>,
     // Pending notification to show when unfocused on next Draw
     pending_notification: Option<Notification>,
     /// When `Some`, the user has pressed a quit shortcut and the second press
@@ -1279,8 +1310,15 @@ impl ChatWidget {
         if !from_replay {
             self.saw_plan_item_this_turn = false;
         }
-        // If there is a queued user message, send exactly one now to begin the next turn.
-        self.maybe_send_next_queued_input();
+        let submitted_loop_followup = if from_replay {
+            false
+        } else {
+            self.maybe_continue_active_loop(last_agent_message.as_deref())
+        };
+        if !submitted_loop_followup {
+            // If there is a queued user message, send exactly one now to begin the next turn.
+            self.maybe_send_next_queued_input();
+        }
         // Emit a notification when the turn completes (suppressed if focused).
         self.notify(Notification::AgentTurnComplete {
             response: last_agent_message.unwrap_or_default(),
@@ -1499,6 +1537,7 @@ impl ChatWidget {
 
     fn on_model_cap_error(&mut self, model: String, reset_after_seconds: Option<u64>) {
         self.finalize_turn();
+        self.replace_active_loop(LoopStopReason::FailedTurn, true);
 
         let mut message = format!("Model {model} is at capacity. Please try a different model.");
         if let Some(seconds) = reset_after_seconds {
@@ -1517,6 +1556,7 @@ impl ChatWidget {
 
     fn on_error(&mut self, message: String) {
         self.finalize_turn();
+        self.replace_active_loop(LoopStopReason::FailedTurn, true);
         self.add_to_history(history_cell::new_error_event(message));
         self.request_redraw();
 
@@ -1625,6 +1665,38 @@ impl ChatWidget {
         }
 
         self.request_redraw();
+    }
+
+    fn maybe_continue_active_loop(&mut self, last_agent_message: Option<&str>) -> bool {
+        let Some(active_loop) = self.active_loop.as_mut() else {
+            return false;
+        };
+        if !self.queued_user_messages.is_empty() || active_loop.awaiting_followup_submit {
+            return false;
+        }
+        if let Some(message) = last_agent_message
+            && message.contains(&active_loop.state.config.stop_phrase)
+        {
+            self.replace_active_loop(LoopStopReason::StopPhraseMatched, true);
+            return false;
+        }
+        if active_loop.state.iteration >= active_loop.state.config.max_iterations {
+            self.replace_active_loop(LoopStopReason::MaxIterationsReached, true);
+            return false;
+        }
+        if active_loop.started_at.elapsed().as_secs() >= active_loop.state.config.max_duration_secs
+        {
+            self.replace_active_loop(LoopStopReason::MaxDurationReached, true);
+            return false;
+        }
+
+        let next_iteration = active_loop.state.iteration.saturating_add(1);
+        let continuation_prompt =
+            Self::build_loop_continuation_prompt(&active_loop.state.config.stop_phrase);
+        active_loop.awaiting_followup_submit = true;
+        self.add_info_message(format!("Loop iteration {next_iteration}"), None);
+        self.submit_user_message(UserMessage::from(continuation_prompt));
+        true
     }
 
     /// Merge queued drafts (plus the current composer state) into a single message for restore.
@@ -2520,6 +2592,7 @@ impl ChatWidget {
             thread_name: None,
             forked_from: None,
             queued_user_messages: VecDeque::new(),
+            active_loop: None,
             show_welcome_banner: is_first_run,
             suppress_session_configured_redraw: false,
             pending_notification: None,
@@ -2570,7 +2643,7 @@ impl ChatWidget {
                     WindowsSandboxLevel::RestrictedToken
                 ),
         );
-        widget.update_collaboration_mode_indicator();
+        widget.sync_footer_indicators();
 
         widget
             .bottom_pane
@@ -2685,6 +2758,7 @@ impl ChatWidget {
             plan_delta_buffer: String::new(),
             plan_item_active: false,
             queued_user_messages: VecDeque::new(),
+            active_loop: None,
             show_welcome_banner: is_first_run,
             suppress_session_configured_redraw: false,
             pending_notification: None,
@@ -2831,6 +2905,7 @@ impl ChatWidget {
             thread_name: None,
             forked_from: None,
             queued_user_messages: VecDeque::new(),
+            active_loop: None,
             show_welcome_banner: false,
             suppress_session_configured_redraw: true,
             pending_notification: None,
@@ -2881,7 +2956,7 @@ impl ChatWidget {
                     WindowsSandboxLevel::RestrictedToken
                 ),
         );
-        widget.update_collaboration_mode_indicator();
+        widget.sync_footer_indicators();
 
         widget
     }
@@ -2983,6 +3058,7 @@ impl ChatWidget {
                     text,
                     text_elements,
                 } => {
+                    self.cancel_loop_for_manual_action();
                     let user_message = UserMessage {
                         text,
                         local_images: self
@@ -3006,6 +3082,7 @@ impl ChatWidget {
                     text,
                     text_elements,
                 } => {
+                    self.cancel_loop_for_manual_action();
                     let user_message = UserMessage {
                         text,
                         local_images: self
@@ -3100,12 +3177,15 @@ impl ChatWidget {
                 self.request_redraw();
             }
             SlashCommand::New => {
+                self.replace_active_loop(LoopStopReason::Cancelled, false);
                 self.app_event_tx.send(AppEvent::NewSession);
             }
             SlashCommand::Resume => {
+                self.replace_active_loop(LoopStopReason::Cancelled, false);
                 self.app_event_tx.send(AppEvent::OpenResumePicker);
             }
             SlashCommand::Fork => {
+                self.replace_active_loop(LoopStopReason::Cancelled, false);
                 self.app_event_tx.send(AppEvent::ForkCurrentSession);
             }
             SlashCommand::Init => {
@@ -3126,6 +3206,12 @@ impl ChatWidget {
             }
             SlashCommand::Review => {
                 self.open_review_popup();
+            }
+            SlashCommand::Loop => {
+                self.add_info_message(
+                    "Usage: /loop <prompt>".to_string(),
+                    Some("This command requires an inline prompt.".to_string()),
+                );
             }
             SlashCommand::Rename => {
                 self.otel_manager.counter("codex.thread.rename", 1, &[]);
@@ -3219,9 +3305,11 @@ impl ChatWidget {
                 self.open_experimental_popup();
             }
             SlashCommand::Quit | SlashCommand::Exit => {
+                self.replace_active_loop(LoopStopReason::Cancelled, false);
                 self.request_quit_without_confirmation();
             }
             SlashCommand::Logout => {
+                self.replace_active_loop(LoopStopReason::Cancelled, false);
                 if let Err(e) = codex_core::auth::logout(
                     &self.config.codex_home,
                     self.config.cli_auth_credentials_store_mode,
@@ -3408,8 +3496,34 @@ impl ChatWidget {
                 });
                 self.bottom_pane.drain_pending_submission_state();
             }
+            SlashCommand::Loop if !trimmed.is_empty() => {
+                let Some((prepared_args, prepared_elements)) =
+                    self.bottom_pane.prepare_inline_args_submission(false)
+                else {
+                    return;
+                };
+                self.open_loop_stop_phrase_prompt(prepared_args, prepared_elements);
+            }
             _ => self.dispatch_command(cmd),
         }
+    }
+
+    fn open_loop_stop_phrase_prompt(&mut self, prompt: String, text_elements: Vec<TextElement>) {
+        let tx = self.app_event_tx.clone();
+        let view = CustomPromptView::new_allow_empty(
+            "Loop Stop Phrase".to_string(),
+            DEFAULT_LOOP_STOP_PHRASE.to_string(),
+            Some("Leave empty to use the default stop phrase.".to_string()),
+            Box::new(move |stop_phrase: String| {
+                tx.send(AppEvent::StartLoop {
+                    prompt: prompt.clone(),
+                    text_elements: text_elements.clone(),
+                    stop_phrase,
+                });
+            }),
+        );
+        self.bottom_pane.show_view(Box::new(view));
+        self.request_redraw();
     }
 
     fn show_rename_prompt(&mut self) {
@@ -3504,6 +3618,64 @@ impl ChatWidget {
         } else {
             self.submit_user_message(user_message);
         }
+    }
+
+    pub(crate) fn start_loop(
+        &mut self,
+        prompt: String,
+        text_elements: Vec<TextElement>,
+        stop_phrase: String,
+    ) {
+        let stop_phrase = match Self::sanitize_loop_stop_phrase(&stop_phrase) {
+            Ok(stop_phrase) => stop_phrase,
+            Err(err) => {
+                self.add_error_message(err);
+                return;
+            }
+        };
+        if self.active_loop.is_some() {
+            self.replace_active_loop(LoopStopReason::Cancelled, true);
+        }
+
+        self.active_loop = Some(ActiveLoopSession {
+            state: LoopState {
+                config: LoopConfig {
+                    stop_phrase: stop_phrase.clone(),
+                    max_iterations: DEFAULT_LOOP_MAX_ITERATIONS,
+                    max_duration_secs: DEFAULT_LOOP_MAX_DURATION_SECS,
+                },
+                started_at: chrono::Utc::now().timestamp(),
+                iteration: 0,
+                initial_prompt: prompt.clone(),
+            },
+            started_at: Instant::now(),
+            awaiting_followup_submit: false,
+        });
+        self.sync_footer_indicators();
+        self.add_info_message(
+            format!(
+                "Loop started. Stop phrase: \"{stop_phrase}\". Max iterations: {DEFAULT_LOOP_MAX_ITERATIONS}. Max duration: 12h."
+            ),
+            None,
+        );
+
+        let user_message = UserMessage {
+            text: prompt,
+            local_images: self
+                .bottom_pane
+                .take_recent_submission_images_with_placeholders(),
+            text_elements,
+            mention_paths: self.bottom_pane.take_mention_paths(),
+        };
+        if self.is_session_configured() {
+            self.reasoning_buffer.clear();
+            self.full_reasoning_buffer.clear();
+            self.set_status_header(String::from("Working"));
+            self.submit_user_message(user_message);
+        } else {
+            self.queue_user_message(user_message);
+        }
+        self.request_redraw();
     }
 
     fn submit_user_message(&mut self, user_message: UserMessage) {
@@ -3639,6 +3811,62 @@ impl ChatWidget {
         }
 
         self.needs_final_message_separator = false;
+        if let Some(active_loop) = self.active_loop.as_mut() {
+            active_loop.state.iteration = active_loop.state.iteration.saturating_add(1);
+            active_loop.awaiting_followup_submit = false;
+        }
+        self.sync_footer_indicators();
+    }
+
+    fn sanitize_loop_stop_phrase(stop_phrase: &str) -> Result<String, String> {
+        let trimmed = stop_phrase.trim();
+        if trimmed.is_empty() {
+            return Ok(DEFAULT_LOOP_STOP_PHRASE.to_string());
+        }
+        if trimmed.contains('\n') {
+            return Err("Loop stop phrase must be a single line.".to_string());
+        }
+        if trimmed.chars().count() > LOOP_STOP_PHRASE_MAX_LEN {
+            return Err(format!(
+                "Loop stop phrase must be at most {LOOP_STOP_PHRASE_MAX_LEN} characters."
+            ));
+        }
+        Ok(trimmed.to_string())
+    }
+
+    fn build_loop_continuation_prompt(stop_phrase: &str) -> String {
+        format!(
+            "Continue the same task.\nDo not ask the user for confirmation.\nIf all requested work is fully done and resolved, reply with exactly \"{stop_phrase}\".\nOtherwise continue working."
+        )
+    }
+
+    fn replace_active_loop(&mut self, reason: LoopStopReason, notify: bool) {
+        if self.active_loop.take().is_none() {
+            return;
+        }
+        self.sync_footer_indicators();
+        if notify {
+            self.add_info_message(Self::loop_stop_message(reason), None);
+        }
+    }
+
+    fn loop_stop_message(reason: LoopStopReason) -> String {
+        match reason {
+            LoopStopReason::StopPhraseMatched => "Loop stopped: stop phrase matched.".to_string(),
+            LoopStopReason::MaxIterationsReached => {
+                "Loop stopped: max iterations reached.".to_string()
+            }
+            LoopStopReason::MaxDurationReached => {
+                "Loop stopped: 12 hour limit reached.".to_string()
+            }
+            LoopStopReason::FailedTurn => "Loop stopped: turn failed.".to_string(),
+            LoopStopReason::Cancelled => "Loop stopped: cancelled by user.".to_string(),
+            LoopStopReason::Interrupted => "Loop stopped: interrupted by user.".to_string(),
+        }
+    }
+
+    fn cancel_loop_for_manual_action(&mut self) {
+        self.replace_active_loop(LoopStopReason::Cancelled, true);
     }
 
     /// Restore the blocked submission draft without losing mention resolution state.
@@ -5737,7 +5965,7 @@ impl ChatWidget {
             } else {
                 None
             };
-            self.update_collaboration_mode_indicator();
+            self.sync_footer_indicators();
             self.refresh_model_display();
             self.request_redraw();
         }
@@ -5977,9 +6205,15 @@ impl ChatWidget {
         }
     }
 
-    fn update_collaboration_mode_indicator(&mut self) {
-        let indicator = self.collaboration_mode_indicator();
-        self.bottom_pane.set_collaboration_mode_indicator(indicator);
+    fn current_loop_indicator(&self) -> Option<LoopIndicatorState> {
+        self.active_loop.as_ref().map(ActiveLoopSession::indicator)
+    }
+
+    fn sync_footer_indicators(&mut self) {
+        self.bottom_pane
+            .set_collaboration_mode_indicator(self.collaboration_mode_indicator());
+        self.bottom_pane
+            .set_loop_indicator(self.current_loop_indicator());
     }
 
     fn personality_label(personality: Personality) -> &'static str {
@@ -6021,7 +6255,7 @@ impl ChatWidget {
             return;
         }
         self.active_collaboration_mask = Some(mask);
-        self.update_collaboration_mode_indicator();
+        self.sync_footer_indicators();
         self.refresh_model_display();
         self.request_redraw();
     }
@@ -6296,6 +6530,7 @@ impl ChatWidget {
 
         if !DOUBLE_PRESS_QUIT_SHORTCUT_ENABLED {
             if self.is_cancellable_work_active() {
+                self.replace_active_loop(LoopStopReason::Interrupted, true);
                 self.submit_op(Op::Interrupt);
             } else {
                 self.request_quit_without_confirmation();
@@ -6313,6 +6548,7 @@ impl ChatWidget {
         self.arm_quit_shortcut(key);
 
         if self.is_cancellable_work_active() {
+            self.replace_active_loop(LoopStopReason::Interrupted, true);
             self.submit_op(Op::Interrupt);
         }
     }
@@ -6383,6 +6619,7 @@ impl ChatWidget {
         text: String,
         collaboration_mode: CollaborationModeMask,
     ) {
+        self.cancel_loop_for_manual_action();
         self.set_collaboration_mask(collaboration_mode);
         self.submit_user_message(text.into());
     }

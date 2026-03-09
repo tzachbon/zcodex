@@ -2199,6 +2199,14 @@ impl App {
                 self.chat_widget
                     .submit_user_message_with_mode(text, collaboration_mode);
             }
+            AppEvent::StartLoop {
+                prompt,
+                text_elements,
+                stop_phrase,
+            } => {
+                self.chat_widget
+                    .start_loop(prompt, text_elements, stop_phrase);
+            }
             AppEvent::ManageSkillsClosed => {
                 self.chat_widget.handle_manage_skills_closed();
             }

@@ -29,6 +29,7 @@ use codex_core::protocol::AgentMessageEvent;
 use codex_core::protocol::AgentReasoningDeltaEvent;
 use codex_core::protocol::AgentReasoningEvent;
 use codex_core::protocol::ApplyPatchApprovalRequestEvent;
+use codex_core::protocol::AskForApproval;
 use codex_core::protocol::BackgroundEventEvent;
 use codex_core::protocol::CreditsSnapshot;
 use codex_core::protocol::Event;
@@ -49,6 +50,7 @@ use codex_core::protocol::PatchApplyEndEvent;
 use codex_core::protocol::RateLimitWindow;
 use codex_core::protocol::ReviewRequest;
 use codex_core::protocol::ReviewTarget;
+use codex_core::protocol::SandboxPolicy;
 use codex_core::protocol::SessionSource;
 use codex_core::protocol::StreamErrorEvent;
 use codex_core::protocol::TerminalInteractionEvent;
@@ -69,6 +71,7 @@ use codex_protocol::config_types::ModeKind;
 use codex_protocol::config_types::Personality;
 use codex_protocol::config_types::Settings;
 use codex_protocol::openai_models::ModelPreset;
+use codex_protocol::openai_models::ReasoningEffort as ReasoningEffortConfig;
 use codex_protocol::openai_models::ReasoningEffortPreset;
 use codex_protocol::openai_models::default_input_modalities;
 use codex_protocol::parse_command::ParsedCommand;
@@ -942,6 +945,7 @@ async fn make_chatwidget_manual(
         frame_requester: FrameRequester::test_dummy(),
         show_welcome_banner: true,
         queued_user_messages: VecDeque::new(),
+        active_loop: None,
         suppress_session_configured_redraw: false,
         pending_notification: None,
         quit_shortcut_expires_at: None,
@@ -982,6 +986,28 @@ fn next_submit_op(op_rx: &mut tokio::sync::mpsc::UnboundedReceiver<Op>) -> Op {
             Err(TryRecvError::Disconnected) => panic!("expected submit op but channel closed"),
         }
     }
+}
+
+fn configure_session(chat: &mut ChatWidget) {
+    let configured = codex_core::protocol::SessionConfiguredEvent {
+        session_id: ThreadId::new(),
+        forked_from_id: None,
+        thread_name: None,
+        model: "test-model".to_string(),
+        model_provider_id: "test-provider".to_string(),
+        approval_policy: AskForApproval::Never,
+        sandbox_policy: SandboxPolicy::ReadOnly,
+        cwd: PathBuf::from("/home/user/project"),
+        reasoning_effort: Some(ReasoningEffortConfig::default()),
+        history_log_id: 0,
+        history_entry_count: 0,
+        initial_messages: None,
+        rollout_path: None,
+    };
+    chat.handle_codex_event(Event {
+        id: "configured".into(),
+        msg: EventMsg::SessionConfigured(configured),
+    });
 }
 
 fn set_chatgpt_auth(chat: &mut ChatWidget) {
@@ -2573,26 +2599,7 @@ async fn plan_slash_command_switches_to_plan_mode() {
 async fn plan_slash_command_with_args_submits_prompt_in_plan_mode() {
     let (mut chat, _rx, mut op_rx) = make_chatwidget_manual(None).await;
     chat.set_feature_enabled(Feature::CollaborationModes, true);
-
-    let configured = codex_core::protocol::SessionConfiguredEvent {
-        session_id: ThreadId::new(),
-        forked_from_id: None,
-        thread_name: None,
-        model: "test-model".to_string(),
-        model_provider_id: "test-provider".to_string(),
-        approval_policy: AskForApproval::Never,
-        sandbox_policy: SandboxPolicy::ReadOnly,
-        cwd: PathBuf::from("/home/user/project"),
-        reasoning_effort: Some(ReasoningEffortConfig::default()),
-        history_log_id: 0,
-        history_entry_count: 0,
-        initial_messages: None,
-        rollout_path: None,
-    };
-    chat.handle_codex_event(Event {
-        id: "configured".into(),
-        msg: EventMsg::SessionConfigured(configured),
-    });
+    configure_session(&mut chat);
 
     chat.bottom_pane
         .set_composer_text("/plan build the plan".to_string(), Vec::new(), Vec::new());
@@ -2611,6 +2618,118 @@ async fn plan_slash_command_with_args_submits_prompt_in_plan_mode() {
         }
     );
     assert_eq!(chat.active_collaboration_mode_kind(), ModeKind::Plan);
+}
+
+#[tokio::test]
+async fn loop_slash_command_opens_stop_phrase_prompt() {
+    let (mut chat, mut rx, _op_rx) = make_chatwidget_manual(None).await;
+
+    chat.bottom_pane
+        .set_composer_text("/loop ship it".to_string(), Vec::new(), Vec::new());
+    chat.handle_key_event(KeyEvent::from(KeyCode::Enter));
+
+    assert!(
+        rx.try_recv().is_err(),
+        "loop prompt should not emit start event yet"
+    );
+    assert!(!chat.bottom_pane.no_modal_or_popup_active());
+}
+
+#[tokio::test]
+async fn loop_stop_phrase_prompt_emits_start_event() {
+    let (mut chat, mut rx, _op_rx) = make_chatwidget_manual(None).await;
+
+    chat.bottom_pane
+        .set_composer_text("/loop ship it".to_string(), Vec::new(), Vec::new());
+    chat.handle_key_event(KeyEvent::from(KeyCode::Enter));
+    chat.bottom_pane.handle_paste("ralph".to_string());
+    chat.handle_key_event(KeyEvent::from(KeyCode::Enter));
+
+    match rx.try_recv().expect("start loop event") {
+        AppEvent::StartLoop {
+            prompt,
+            text_elements,
+            stop_phrase,
+        } => {
+            assert_eq!(prompt, "ship it");
+            assert_eq!(text_elements, Vec::new());
+            assert_eq!(stop_phrase, "ralph");
+        }
+        other => panic!("expected StartLoop event, got {other:?}"),
+    }
+}
+
+#[tokio::test]
+async fn start_loop_submits_first_prompt_and_sets_indicator() {
+    let (mut chat, _rx, mut op_rx) = make_chatwidget_manual(None).await;
+    configure_session(&mut chat);
+
+    chat.start_loop("ship it".to_string(), Vec::new(), "ralph".to_string());
+
+    let items = match next_submit_op(&mut op_rx) {
+        Op::UserTurn { items, .. } => items,
+        other => panic!("expected Op::UserTurn, got {other:?}"),
+    };
+    assert_eq!(
+        items,
+        vec![UserInput::Text {
+            text: "ship it".to_string(),
+            text_elements: Vec::new(),
+        }]
+    );
+    assert_eq!(
+        chat.bottom_pane.mode_indicators(),
+        &[crate::bottom_pane::FooterBadge::Loop(
+            crate::bottom_pane::LoopIndicatorState {
+                iteration: 1,
+                max_iterations: 100,
+                status: crate::bottom_pane::LoopIndicatorStatus::Running,
+            }
+        )]
+    );
+}
+
+#[tokio::test]
+async fn loop_turn_complete_auto_submits_continuation() {
+    let (mut chat, _rx, mut op_rx) = make_chatwidget_manual(None).await;
+    configure_session(&mut chat);
+    chat.start_loop("ship it".to_string(), Vec::new(), "ralph".to_string());
+    let _ = next_submit_op(&mut op_rx);
+    chat.handle_codex_event(Event {
+        id: "turn-complete".into(),
+        msg: EventMsg::TurnComplete(TurnCompleteEvent {
+            last_agent_message: Some("still working".to_string()),
+        }),
+    });
+
+    let items = match next_submit_op(&mut op_rx) {
+        Op::UserTurn { items, .. } => items,
+        other => panic!("expected Op::UserTurn, got {other:?}"),
+    };
+    assert_eq!(
+        items,
+        vec![UserInput::Text {
+            text: "Continue the same task.\nDo not ask the user for confirmation.\nIf all requested work is fully done and resolved, reply with exactly \"ralph\".\nOtherwise continue working.".to_string(),
+            text_elements: Vec::new(),
+        }]
+    );
+}
+
+#[tokio::test]
+async fn loop_stop_phrase_clears_indicator_after_completion() {
+    let (mut chat, _rx, mut op_rx) = make_chatwidget_manual(None).await;
+    configure_session(&mut chat);
+    chat.start_loop("ship it".to_string(), Vec::new(), "ralph".to_string());
+    let _ = next_submit_op(&mut op_rx);
+
+    chat.handle_codex_event(Event {
+        id: "turn-complete".into(),
+        msg: EventMsg::TurnComplete(TurnCompleteEvent {
+            last_agent_message: Some("done ralph".to_string()),
+        }),
+    });
+
+    assert!(chat.bottom_pane.mode_indicators().is_empty());
 }
 
 #[tokio::test]

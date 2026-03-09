@@ -28,6 +28,7 @@ use codex_core::protocol::SandboxPolicy;
 use codex_protocol::config_types::CollaborationModeMask;
 use codex_protocol::config_types::Personality;
 use codex_protocol::openai_models::ReasoningEffort;
+use codex_protocol::user_input::TextElement;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[cfg_attr(not(target_os = "windows"), allow(dead_code))]
@@ -275,6 +276,13 @@ pub(crate) enum AppEvent {
     SubmitUserMessageWithMode {
         text: String,
         collaboration_mode: CollaborationModeMask,
+    },
+
+    /// Start a foreground loop in the current session.
+    StartLoop {
+        prompt: String,
+        text_elements: Vec<TextElement>,
+        stop_phrase: String,
     },
 
     /// Open the approval popup.
