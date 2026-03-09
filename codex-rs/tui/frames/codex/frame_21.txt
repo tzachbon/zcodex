@@ -1,17 +1,15 @@
-                                      
-             eeodcddcdcoee            
-          occeeeecxdxcdeeocce         
-        dceeccece     eexcceeco       
-      ocxdcc             eodcodco     
-     oooce             oxoee eeeeo    
-    ocox             occeoo    eeeo   
-    xcxe           e oeooc     edec   
-     ee            ed cxo       x x   
-    x x  ocdddddccc  exocxo    do x   
-    x xe xe      eox   ececxo  ocoo   
-     d co eeccc  ce     cceod oe o    
-     cc dde                 ecc o     
-       ce  eoe          eodcc oe      
-         cde ccccdxxdddccc  oe        
-            cccdceeeeoedcce           
-                                      
+
+            eodcddcdcee
+         occeeecxdxcdeocce
+       dceeccce     excceeco
+     ooce            xoee eeeo
+    oox            oceoo    eeo
+    xxe          e oeoc     eec
+     e           ed co        x
+    xx  ocddddccc  excxo    d x
+    xxe xe     eox   cecxo  ooo
+      co eecc  ce    cceod oeo
+      ce  eoe        eodcc oe
+        cde cccdxxdddcc  oe
+           ccdceeeeoecce
+

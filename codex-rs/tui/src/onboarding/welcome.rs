@@ -20,8 +20,8 @@ use crate::tui::FrameRequester;
 
 use super::onboarding_screen::StepState;
 
-const MIN_ANIMATION_HEIGHT: u16 = 37;
-const MIN_ANIMATION_WIDTH: u16 = 60;
+const MIN_ANIMATION_HEIGHT: u16 = 33;
+const MIN_ANIMATION_WIDTH: u16 = 54;
 
 pub(crate) struct WelcomeWidget {
     pub is_logged_in: bool,

@@ -1,17 +1,15 @@
-                                      
-                ccccco                
-               odeeoxoe               
-               c  xoeco               
-               ocxxxddcx              
-              x cxxxxoox              
-              xcoocecexc              
-              x   xoexxe              
-              x   ocexxc              
-              co xoxxcxx              
-              x   oxcdce              
-              xo  xcdcco              
-               o  cx eox              
-               o ccxocex              
-               ceocoxexe              
-                e cxeoo               
-                                      
+
+              ccccco
+             odeeoxoe
+             c  xoeco
+              cxxxxoo
+             coocecex
+                xoexx
+                ocexx
+             o xoxxcx
+                oxcdc
+             o  xcdcc
+             o ccxoce
+             ceocoxex
+              e cxeoo
+
