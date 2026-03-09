@@ -78,7 +78,6 @@ mod file_search;
 mod frames;
 mod get_git_diff;
 mod history_cell;
-mod image_preview;
 pub mod insert_history;
 mod key_hint;
 pub mod live_wrap;

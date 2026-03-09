@@ -10,7 +10,6 @@ use crate::app_event::ExitMode;
 use crate::app_event_sender::AppEventSender;
 use crate::bottom_pane::FeedbackAudience;
 use crate::bottom_pane::LocalImageAttachment;
-use crate::history_cell::UserHistoryCell;
 use crate::test_backend::VT100Backend;
 use crate::tui::FrameRequester;
 use assert_matches::assert_matches;
@@ -82,6 +81,8 @@ use codex_utils_absolute_path::AbsolutePathBuf;
 use crossterm::event::KeyCode;
 use crossterm::event::KeyEvent;
 use crossterm::event::KeyModifiers;
+use image::ImageBuffer;
+use image::Rgba;
 use insta::assert_snapshot;
 use pretty_assertions::assert_eq;
 #[cfg(target_os = "windows")]
@@ -225,25 +226,20 @@ async fn replayed_user_message_preserves_text_elements_and_local_images() {
         msg: EventMsg::SessionConfigured(configured),
     });
 
-    let mut user_cell = None;
-    while let Ok(ev) = rx.try_recv() {
-        if let AppEvent::InsertHistoryCell(cell) = ev
-            && let Some(cell) = cell.as_any().downcast_ref::<UserHistoryCell>()
-        {
-            user_cell = Some((
-                cell.message.clone(),
-                cell.text_elements.clone(),
-                cell.local_image_paths.clone(),
-            ));
-            break;
-        }
-    }
-
-    let (stored_message, stored_elements, stored_images) =
-        user_cell.expect("expected a replayed user history cell");
-    assert_eq!(stored_message, message);
-    assert_eq!(stored_elements, text_elements);
-    assert_eq!(stored_images, local_images);
+    let inserted = drain_insert_history(&mut rx);
+    let replayed = inserted
+        .iter()
+        .map(|lines| lines_to_single_string(lines))
+        .collect::<Vec<_>>()
+        .join("\n");
+    assert!(
+        replayed.contains(&message),
+        "expected replayed text in history"
+    );
+    assert!(
+        replayed.contains("/tmp/replay.png"),
+        "expected replayed image path in history"
+    );
 }
 
 #[tokio::test]
@@ -368,25 +364,20 @@ async fn submission_preserves_text_elements_and_local_images() {
         }
     );
 
-    let mut user_cell = None;
-    while let Ok(ev) = rx.try_recv() {
-        if let AppEvent::InsertHistoryCell(cell) = ev
-            && let Some(cell) = cell.as_any().downcast_ref::<UserHistoryCell>()
-        {
-            user_cell = Some((
-                cell.message.clone(),
-                cell.text_elements.clone(),
-                cell.local_image_paths.clone(),
-            ));
-            break;
-        }
-    }
-
-    let (stored_message, stored_elements, stored_images) =
-        user_cell.expect("expected submitted user history cell");
-    assert_eq!(stored_message, text);
-    assert_eq!(stored_elements, text_elements);
-    assert_eq!(stored_images, local_images);
+    let inserted = drain_insert_history(&mut rx);
+    let submitted = inserted
+        .iter()
+        .map(|lines| lines_to_single_string(lines))
+        .collect::<Vec<_>>()
+        .join("\n");
+    assert!(
+        submitted.contains(&text),
+        "expected submitted text in history"
+    );
+    assert!(
+        submitted.contains("/tmp/submitted.png"),
+        "expected submitted image path in history"
+    );
 }
 
 #[tokio::test]
@@ -1039,6 +1030,46 @@ fn lines_to_single_string(lines: &[ratatui::text::Line<'static>]) -> String {
         s.push('\n');
     }
     s
+}
+
+#[tokio::test]
+async fn simple_reasoning_summary_is_hidden_from_main_history() {
+    let (mut chat, mut rx, _op_rx) = make_chatwidget_manual(None).await;
+
+    chat.handle_codex_event(Event {
+        id: "turn-start".into(),
+        msg: EventMsg::TurnStarted(TurnStartedEvent {
+            model_context_window: None,
+            collaboration_mode_kind: ModeKind::Default,
+        }),
+    });
+    chat.handle_codex_event(Event {
+        id: "reasoning-delta".into(),
+        msg: EventMsg::AgentReasoningDelta(AgentReasoningDeltaEvent {
+            delta: "**Quick check**\n\nI should answer directly.".to_string(),
+        }),
+    });
+    chat.handle_codex_event(Event {
+        id: "reasoning-final".into(),
+        msg: EventMsg::AgentReasoning(AgentReasoningEvent {
+            text: String::new(),
+        }),
+    });
+
+    let history_cell = loop {
+        match rx.try_recv() {
+            Ok(AppEvent::InsertHistoryCell(cell)) => break cell,
+            Ok(_) => continue,
+            Err(TryRecvError::Empty) => panic!("expected reasoning history cell"),
+            Err(TryRecvError::Disconnected) => panic!("app event channel closed"),
+        }
+    };
+
+    assert!(history_cell.display_lines(80).is_empty());
+    assert_eq!(
+        lines_to_single_string(&history_cell.transcript_lines(80)),
+        "• I should answer directly.\n"
+    );
 }
 
 fn make_token_info(total_tokens: i64, context_window: i64) -> TokenUsageInfo {
@@ -3104,7 +3135,12 @@ async fn custom_prompt_enter_empty_does_not_send() {
 #[tokio::test]
 async fn view_image_tool_call_adds_history_cell() {
     let (mut chat, mut rx, _op_rx) = make_chatwidget_manual(None).await;
-    let image_path = chat.config.cwd.join("example.png");
+    let dir = tempdir().unwrap();
+    chat.config.cwd = dir.path().to_path_buf();
+    let image_path = dir.path().join("example.png");
+    ImageBuffer::from_pixel(4, 4, Rgba([255u8, 0, 0, 255]))
+        .save(&image_path)
+        .unwrap();
 
     chat.handle_codex_event(Event {
         id: "sub-image".into(),
@@ -3115,13 +3151,9 @@ async fn view_image_tool_call_adds_history_cell() {
     });
 
     let mut history_cells = Vec::new();
-    let mut preview_path = None;
     loop {
         match rx.try_recv() {
             Ok(AppEvent::InsertHistoryCell(cell)) => history_cells.push(cell.display_lines(80)),
-            Ok(AppEvent::PreviewImage { path }) => {
-                preview_path = Some(path);
-            }
             Err(TryRecvError::Empty) => break,
             Ok(other) => panic!("unexpected app event: {other:?}"),
             Err(TryRecvError::Disconnected) => panic!("app event channel disconnected"),
@@ -3131,7 +3163,6 @@ async fn view_image_tool_call_adds_history_cell() {
     assert_eq!(history_cells.len(), 1, "expected a single history cell");
     let combined = lines_to_single_string(&history_cells[0]);
     assert_snapshot!("local_image_attachment_history_snapshot", combined);
-    assert_eq!(preview_path, Some(image_path));
 }
 
 // Snapshot test: interrupting a running exec finalizes the active cell with a red ✗

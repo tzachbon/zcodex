@@ -52,6 +52,7 @@ use codex_protocol::account::PlanType;
 use codex_protocol::mcp::Resource;
 use codex_protocol::mcp::ResourceTemplate;
 use codex_protocol::models::WebSearchAction;
+use codex_protocol::models::local_image_label_text;
 use codex_protocol::openai_models::ReasoningEffort as ReasoningEffortConfig;
 use codex_protocol::plan_tool::PlanItemArg;
 use codex_protocol::plan_tool::StepStatus;
@@ -60,7 +61,9 @@ use codex_protocol::request_user_input::RequestUserInputAnswer;
 use codex_protocol::request_user_input::RequestUserInputQuestion;
 use codex_protocol::user_input::TextElement;
 use image::DynamicImage;
+use image::GenericImageView;
 use image::ImageReader;
+use image::Rgba;
 use ratatui::prelude::*;
 use ratatui::style::Color;
 use ratatui::style::Modifier;
@@ -80,6 +83,11 @@ use std::time::Instant;
 use tracing::error;
 use unicode_segmentation::UnicodeSegmentation;
 use unicode_width::UnicodeWidthStr;
+
+const INLINE_IMAGE_MAX_COLS: u16 = 56;
+const INLINE_IMAGE_MAX_ROWS: u16 = 18;
+const INLINE_IMAGE_MIN_COLS: u16 = 8;
+const INLINE_IMAGE_PREFIX: &str = "  ";
 
 /// Represents an event to display in the conversation history. Returns its
 /// `Vec<Line<'static>>` representation to make it easier to display in a
@@ -260,6 +268,163 @@ impl WidthCachedLines {
         entries.insert(width, lines.clone());
         lines
     }
+}
+
+#[derive(Debug)]
+enum InlineImageSource {
+    Path(PathBuf),
+    Decoded(DynamicImage),
+}
+
+#[derive(Debug)]
+struct InlineImageHistoryCell {
+    title: String,
+    detail: Option<String>,
+    source: InlineImageSource,
+    lines_cache: WidthCachedLines,
+}
+
+impl InlineImageHistoryCell {
+    fn from_path(title: String, detail: Option<String>, path: PathBuf) -> Self {
+        Self {
+            title,
+            detail,
+            source: InlineImageSource::Path(path),
+            lines_cache: WidthCachedLines::default(),
+        }
+    }
+
+    fn from_image(title: String, detail: Option<String>, image: DynamicImage) -> Self {
+        Self {
+            title,
+            detail,
+            source: InlineImageSource::Decoded(image),
+            lines_cache: WidthCachedLines::default(),
+        }
+    }
+
+    fn load_image(&self) -> Result<DynamicImage, String> {
+        match &self.source {
+            InlineImageSource::Path(path) => ImageReader::open(path)
+                .map_err(|err| format!("Failed to open image: {err}"))?
+                .decode()
+                .map_err(|err| format!("Failed to decode image: {err}")),
+            InlineImageSource::Decoded(image) => Ok(image.clone()),
+        }
+    }
+}
+
+impl HistoryCell for InlineImageHistoryCell {
+    fn display_lines(&self, width: u16) -> Vec<Line<'static>> {
+        self.lines_cache.get_or_render(width, || {
+            let mut lines: Vec<Line<'static>> =
+                vec![vec!["• ".dim(), self.title.clone().bold()].into()];
+
+            if let Some(detail) = &self.detail {
+                lines.push(vec!["  └ ".dim(), detail.clone().dim()].into());
+            }
+
+            match self.load_image() {
+                Ok(image) => {
+                    let preview_width = width.saturating_sub(INLINE_IMAGE_PREFIX.len() as u16);
+                    let preview = render_inline_image_lines(&image, preview_width);
+                    if !preview.is_empty() {
+                        lines.push(Line::from(""));
+                        lines.extend(prefix_lines(
+                            preview,
+                            INLINE_IMAGE_PREFIX.into(),
+                            INLINE_IMAGE_PREFIX.into(),
+                        ));
+                    }
+                }
+                Err(err) => {
+                    lines.push(vec!["  └ ".dim(), err.red()].into());
+                }
+            }
+
+            lines
+        })
+    }
+}
+
+fn render_inline_image_lines(image: &DynamicImage, width: u16) -> Vec<Line<'static>> {
+    if width < INLINE_IMAGE_MIN_COLS {
+        let (img_width, img_height) = image.dimensions();
+        return vec![Line::from(format!("{img_width}x{img_height}").dim())];
+    }
+
+    let (img_width, img_height) = image.dimensions();
+    let mut cols = width.min(INLINE_IMAGE_MAX_COLS);
+    if img_width > 0 && img_height > 0 {
+        let max_cols_by_height = ((u64::from(img_width) * u64::from(INLINE_IMAGE_MAX_ROWS) * 2)
+            / u64::from(img_height))
+        .max(1) as u16;
+        cols = cols.min(max_cols_by_height.max(1));
+    }
+    let max_upscale_cols = u16::try_from(img_width.saturating_mul(4)).unwrap_or(u16::MAX);
+    cols = cols.min(max_upscale_cols.max(1));
+    let min_cols = if img_width >= u32::from(INLINE_IMAGE_MIN_COLS) {
+        INLINE_IMAGE_MIN_COLS
+    } else {
+        1
+    };
+    cols = cols.max(min_cols).min(width);
+
+    if cols == 0 {
+        return vec![Line::from(format!("{img_width}x{img_height}").dim())];
+    }
+
+    let pixel_height =
+        ((u64::from(img_height) * u64::from(cols)) / u64::from(img_width.max(1))).max(1) as u32;
+    let rows = pixel_height
+        .div_ceil(2)
+        .min(u32::from(INLINE_IMAGE_MAX_ROWS))
+        .max(1);
+    let resized = image
+        .resize_exact(
+            u32::from(cols),
+            rows * 2,
+            image::imageops::FilterType::Triangle,
+        )
+        .to_rgba8();
+
+    let pad = usize::from(width.saturating_sub(cols) / 2);
+    let pad_str = " ".repeat(pad);
+    let mut lines = Vec::with_capacity(rows as usize + 1);
+
+    for row in 0..rows {
+        let mut spans = Vec::with_capacity(usize::from(cols) + if pad > 0 { 1 } else { 0 });
+        if !pad_str.is_empty() {
+            spans.push(Span::from(pad_str.clone()));
+        }
+
+        for col in 0..u32::from(cols) {
+            let top = composite_rgba(*resized.get_pixel(col, row * 2));
+            let bottom = composite_rgba(*resized.get_pixel(col, row * 2 + 1));
+            spans.push(Span::styled("▀", Style::default().fg(top).bg(bottom)));
+        }
+
+        lines.push(Line::from(spans));
+    }
+
+    let caption = format!("{img_width}x{img_height}").dim();
+    if pad > 0 {
+        lines.push(Line::from(vec![Span::from(pad_str), caption]));
+    } else {
+        lines.push(Line::from(caption));
+    }
+
+    lines
+}
+
+fn composite_rgba(pixel: Rgba<u8>) -> Color {
+    let [red, green, blue, alpha] = pixel.0;
+    let alpha = f32::from(alpha) / 255.0;
+    Color::Rgb(
+        (f32::from(red) * alpha) as u8,
+        (f32::from(green) * alpha) as u8,
+        (f32::from(blue) * alpha) as u8,
+    )
 }
 
 impl HistoryCell for UserHistoryCell {
@@ -840,11 +1005,16 @@ impl HistoryCell for PatchHistoryCell {
 
 #[derive(Debug)]
 struct CompletedMcpToolCallWithImageOutput {
-    _image: DynamicImage,
+    image: DynamicImage,
 }
 impl HistoryCell for CompletedMcpToolCallWithImageOutput {
-    fn display_lines(&self, _width: u16) -> Vec<Line<'static>> {
-        vec!["tool result (image output)".into()]
+    fn display_lines(&self, width: u16) -> Vec<Line<'static>> {
+        InlineImageHistoryCell::from_image(
+            "Tool Result Image".to_string(),
+            None,
+            self.image.clone(),
+        )
+        .display_lines(width)
     }
 }
 
@@ -1061,6 +1231,39 @@ pub(crate) fn new_user_prompt(
         message,
         text_elements,
         local_image_paths,
+    }
+}
+
+pub(crate) fn new_user_message_history(
+    message: String,
+    text_elements: Vec<TextElement>,
+    local_image_paths: Vec<PathBuf>,
+    cwd: &Path,
+    render_images: bool,
+) -> Box<dyn HistoryCell> {
+    let mut parts: Vec<Box<dyn HistoryCell>> = Vec::new();
+    if !message.trim().is_empty() {
+        parts.push(Box::new(new_user_prompt(
+            message,
+            text_elements,
+            local_image_paths.clone(),
+        )));
+    }
+
+    if render_images {
+        for (idx, path) in local_image_paths.into_iter().enumerate() {
+            parts.push(new_local_image_attachment(
+                path,
+                cwd,
+                Some(local_image_label_text(idx + 1)),
+            ));
+        }
+    }
+
+    match parts.len() {
+        0 => Box::new(PlainHistoryCell::new(Vec::new())),
+        1 => parts.into_iter().next().expect("one part"),
+        _ => Box::new(CompositeHistoryCell::new(parts)),
     }
 }
 
@@ -1520,7 +1723,7 @@ fn try_new_completed_mcp_tool_call_with_image_output(
         .iter()
         .find_map(decode_mcp_image)?;
 
-    Some(CompletedMcpToolCallWithImageOutput { _image: image })
+    Some(CompletedMcpToolCallWithImageOutput { image })
 }
 
 /// Decodes an MCP `ImageContent` block into an in-memory image.
@@ -2119,18 +2322,42 @@ pub(crate) fn new_patch_apply_failure(stderr: String) -> PlainHistoryCell {
     PlainHistoryCell { lines }
 }
 
-pub(crate) fn new_view_image_tool_call(path: PathBuf, cwd: &Path) -> PlainHistoryCell {
+pub(crate) fn new_local_image_attachment(
+    path: PathBuf,
+    cwd: &Path,
+    placeholder: Option<String>,
+) -> Box<dyn HistoryCell> {
     let display_path = display_path_for(&path, cwd);
+    let title = match placeholder {
+        Some(placeholder) => format!("Attached {placeholder}"),
+        None => "Attached Image".to_string(),
+    };
 
-    let lines: Vec<Line<'static>> = vec![
-        vec!["• ".dim(), "Viewed Image".bold()].into(),
-        vec!["  └ ".dim(), display_path.dim()].into(),
-    ];
-
-    PlainHistoryCell { lines }
+    Box::new(InlineImageHistoryCell::from_path(
+        title,
+        Some(display_path),
+        path,
+    ))
 }
 
+pub(crate) fn new_view_image_tool_call(path: PathBuf, cwd: &Path) -> Box<dyn HistoryCell> {
+    let display_path = display_path_for(&path, cwd);
+    Box::new(InlineImageHistoryCell::from_path(
+        "Viewed Image".to_string(),
+        Some(display_path),
+        path,
+    ))
+}
+
+#[cfg(test)]
 pub(crate) fn new_reasoning_summary_block(full_reasoning_buffer: String) -> Box<dyn HistoryCell> {
+    new_reasoning_summary_block_with_transcript_only(full_reasoning_buffer, false)
+}
+
+pub(crate) fn new_reasoning_summary_block_with_transcript_only(
+    full_reasoning_buffer: String,
+    transcript_only: bool,
+) -> Box<dyn HistoryCell> {
     let full_reasoning_buffer = full_reasoning_buffer.trim();
     if let Some(open) = full_reasoning_buffer.find("**") {
         let after_open = &full_reasoning_buffer[(open + 2)..];
@@ -2144,7 +2371,7 @@ pub(crate) fn new_reasoning_summary_block(full_reasoning_buffer: String) -> Box<
                 return Box::new(ReasoningSummaryCell::new(
                     header_buffer,
                     summary_buffer,
-                    false,
+                    transcript_only,
                 ));
             }
         }
@@ -2777,8 +3004,9 @@ mod tests {
             .complete(Duration::from_millis(25), Ok(result))
             .expect("expected image cell");
 
-        let rendered = render_lines(&extra_cell.display_lines(80));
-        assert_eq!(rendered, vec!["tool result (image output)"]);
+        let rendered = render_lines(&extra_cell.display_lines(80)).join("\n");
+        assert!(rendered.contains("Tool Result Image"));
+        assert!(rendered.contains("1x1"));
     }
 
     #[test]
@@ -2804,8 +3032,9 @@ mod tests {
             .complete(Duration::from_millis(25), Ok(result))
             .expect("expected image cell");
 
-        let rendered = render_lines(&extra_cell.display_lines(80));
-        assert_eq!(rendered, vec!["tool result (image output)"]);
+        let rendered = render_lines(&extra_cell.display_lines(80)).join("\n");
+        assert!(rendered.contains("Tool Result Image"));
+        assert!(rendered.contains("1x1"));
     }
 
     #[test]
@@ -2830,8 +3059,9 @@ mod tests {
             .complete(Duration::from_millis(25), Ok(result))
             .expect("expected image cell");
 
-        let rendered = render_lines(&extra_cell.display_lines(80));
-        assert_eq!(rendered, vec!["tool result (image output)"]);
+        let rendered = render_lines(&extra_cell.display_lines(80)).join("\n");
+        assert!(rendered.contains("Tool Result Image"));
+        assert!(rendered.contains("1x1"));
     }
 
     #[test]

@@ -37,7 +37,10 @@ where
     if let Some(raw_source) = strip_raw_tui_wrapper(request.source) {
         return native_render_lines(raw_source, request.width);
     }
-    if !matches!(request.surface, MarkdownSurface::ProposedPlanFinal) {
+    if !matches!(
+        request.surface,
+        MarkdownSurface::ProposedPlanFinal | MarkdownSurface::AgentStream
+    ) {
         return native_render_lines(request.source, request.width);
     }
 
@@ -63,6 +66,9 @@ fn native_render_lines(source: &str, width: Option<usize>) -> Vec<Line<'static>>
 fn run_mdview(request: &MarkdownRenderRequest<'_>) -> Result<String, String> {
     let mut command = Command::new("mdview");
     command.arg("-").arg("--paging=never");
+    if matches!(request.surface, MarkdownSurface::AgentStream) {
+        command.arg("--plain");
+    }
     let force_color = match request.surface {
         MarkdownSurface::AgentStream
         | MarkdownSurface::ProposedPlanFinal
@@ -113,6 +119,11 @@ fn run_mdview(request: &MarkdownRenderRequest<'_>) -> Result<String, String> {
 fn parse_mdview_output(output: &str) -> Result<Vec<Line<'static>>, String> {
     let mut lines = std::panic::catch_unwind(|| ansi_escape(output).lines)
         .map_err(|_| "ansi parser panicked".to_string())?;
+    for line in &mut lines {
+        if crate::render::line_utils::is_blank_line_spaces_only(line) {
+            *line = Line::from("");
+        }
+    }
     while lines
         .last()
         .is_some_and(crate::render::line_utils::is_blank_line_spaces_only)
@@ -207,6 +218,20 @@ mod tests {
         );
 
         assert_eq!(lines_to_strings(&lines), vec!["1. item"]);
+    }
+
+    #[test]
+    fn agent_stream_uses_mdview_renderer() {
+        let lines = render_markdown_lines_with_runner(
+            MarkdownRenderRequest {
+                source: "# Title\n",
+                width: None,
+                surface: MarkdownSurface::AgentStream,
+            },
+            |_| Ok("rendered via mdview\n".to_string()),
+        );
+
+        assert_eq!(lines_to_strings(&lines), vec!["rendered via mdview"]);
     }
 
     #[test]

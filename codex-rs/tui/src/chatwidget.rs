@@ -1179,8 +1179,11 @@ impl ChatWidget {
         // At the end of a reasoning block, record transcript-only content.
         self.full_reasoning_buffer.push_str(&self.reasoning_buffer);
         if !self.full_reasoning_buffer.is_empty() {
-            let cell =
-                history_cell::new_reasoning_summary_block(self.full_reasoning_buffer.clone());
+            let transcript_only = !self.had_work_activity && !self.saw_plan_item_this_turn;
+            let cell = history_cell::new_reasoning_summary_block_with_transcript_only(
+                self.full_reasoning_buffer.clone(),
+                transcript_only,
+            );
             self.add_boxed_history(cell);
         }
         self.reasoning_buffer.clear();
@@ -1796,11 +1799,10 @@ impl ChatWidget {
     fn on_view_image_tool_call(&mut self, event: ViewImageToolCallEvent) {
         self.flush_answer_stream_with_separator();
         let path = event.path;
-        self.add_to_history(history_cell::new_view_image_tool_call(
-            path.clone(),
+        self.add_boxed_history(history_cell::new_view_image_tool_call(
+            path,
             &self.config.cwd,
         ));
-        self.app_event_tx.send(AppEvent::PreviewImage { path });
         self.request_redraw();
     }
 
@@ -3612,14 +3614,16 @@ impl ChatWidget {
                 });
         }
 
-        // Only show the text portion in conversation history.
-        if !text.is_empty() {
-            let local_image_paths = local_images.into_iter().map(|img| img.path).collect();
-            self.add_to_history(history_cell::new_user_prompt(
-                text,
-                text_elements,
-                local_image_paths,
-            ));
+        let local_image_paths = local_images.into_iter().map(|img| img.path).collect();
+        let history_cell = history_cell::new_user_message_history(
+            text,
+            text_elements,
+            local_image_paths,
+            &self.config.cwd,
+            self.config.tui_image_preview,
+        );
+        if !history_cell.display_lines(u16::MAX).is_empty() {
+            self.add_boxed_history(history_cell);
         }
 
         self.needs_final_message_separator = false;
@@ -3909,12 +3913,15 @@ impl ChatWidget {
     }
 
     fn on_user_message_event(&mut self, event: UserMessageEvent) {
-        if !event.message.trim().is_empty() {
-            self.add_to_history(history_cell::new_user_prompt(
-                event.message,
-                event.text_elements,
-                event.local_images,
-            ));
+        let history_cell = history_cell::new_user_message_history(
+            event.message,
+            event.text_elements,
+            event.local_images,
+            &self.config.cwd,
+            self.config.tui_image_preview,
+        );
+        if !history_cell.display_lines(u16::MAX).is_empty() {
+            self.add_boxed_history(history_cell);
         }
 
         // User messages reset separator state so the next agent response doesn't add a stray break.
