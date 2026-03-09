@@ -1273,8 +1273,11 @@ impl ChatWidget {
         self.clear_unified_exec_processes();
         self.request_redraw();
 
-        if !from_replay && self.queued_user_messages.is_empty() {
-            self.maybe_prompt_plan_implementation();
+        if !from_replay
+            && self.queued_user_messages.is_empty()
+            && self.maybe_prompt_plan_implementation()
+        {
+            return;
         }
         // Keep this flag for replayed completion events so a subsequent live TurnComplete can
         // still show the prompt once after thread switch replay.
@@ -1291,31 +1294,33 @@ impl ChatWidget {
         self.maybe_show_pending_rate_limit_prompt();
     }
 
-    fn maybe_prompt_plan_implementation(&mut self) {
+    fn maybe_prompt_plan_implementation(&mut self) -> bool {
         if !self.collaboration_modes_enabled() {
-            return;
+            return false;
         }
         if !self.queued_user_messages.is_empty() {
-            return;
+            return false;
         }
         if !Self::is_plan_mode(self.active_mode_kind()) {
-            return;
+            return false;
         }
         if !self.saw_plan_item_this_turn {
-            return;
+            return false;
         }
         if !self.bottom_pane.no_modal_or_popup_active() {
-            return;
+            return false;
         }
 
         if matches!(
             self.rate_limit_switch_prompt,
             RateLimitSwitchPromptState::Pending
         ) {
-            return;
+            return false;
         }
 
+        self.saw_plan_item_this_turn = false;
         self.open_plan_implementation_prompt();
+        true
     }
 
     fn open_plan_implementation_prompt(&mut self) {
@@ -3510,11 +3515,20 @@ impl ChatWidget {
         text_elements: Vec<TextElement>,
         mention_paths: HashMap<String, String>,
     ) {
-        if let Some(mode) = workflow.preferred_mode()
-            && self.collaboration_modes_enabled()
-            && let Some(mask) = self.collaboration_mask_for_kind(mode)
-        {
-            self.set_collaboration_mask(mask);
+        if let Some(mode) = workflow.preferred_mode() {
+            if !self.collaboration_modes_enabled() {
+                self.add_info_message(
+                    "Collaboration modes are disabled.".to_string(),
+                    Some(
+                        "Enable collaboration modes to run native GSD planning commands."
+                            .to_string(),
+                    ),
+                );
+                return;
+            }
+            if let Some(mask) = self.collaboration_mask_for_kind(mode) {
+                self.set_collaboration_mask(mask);
+            }
         }
         let rendered =
             codex_core::gsd::render_workflow_prompt_with_elements(workflow, &args, &text_elements);

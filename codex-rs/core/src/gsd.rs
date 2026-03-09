@@ -61,6 +61,8 @@ pub struct RenderedWorkflowPrompt {
 struct SanitizedArgs {
     text: String,
     boundary_map: Vec<(usize, usize)>,
+    source_start: usize,
+    source_end: usize,
 }
 
 impl GsdWorkflowCommand {
@@ -412,12 +414,25 @@ Keep the `.planning/` state coherent with the work you perform.
         text = text.replacen("__CODEX_GSD_INLINE_ARGS__", &sanitized_args.text, 1);
         text_elements
             .iter()
-            .map(|element| {
-                element.map_range(|range| ByteRange {
+            .filter_map(|element| {
+                let range = element.byte_range;
+                let trimmed_start = range.start.max(sanitized_args.source_start);
+                let trimmed_end = range.end.min(sanitized_args.source_end);
+                if trimmed_start >= trimmed_end {
+                    return None;
+                }
+                Some(element.map_range(|_| ByteRange {
                     start: args_start
-                        + map_sanitized_offset(&sanitized_args.boundary_map, range.start),
-                    end: args_start + map_sanitized_offset(&sanitized_args.boundary_map, range.end),
-                })
+                        + map_sanitized_offset(
+                            &sanitized_args.boundary_map,
+                            trimmed_start - sanitized_args.source_start,
+                        ),
+                    end: args_start
+                        + map_sanitized_offset(
+                            &sanitized_args.boundary_map,
+                            trimmed_end - sanitized_args.source_start,
+                        ),
+                }))
             })
             .collect()
     };
@@ -430,6 +445,8 @@ Keep the `.planning/` state coherent with the work you perform.
 
 fn sanitize_args_for_prompt(args: &str) -> SanitizedArgs {
     let trimmed = args.trim();
+    let source_start = args.len() - args.trim_start().len();
+    let source_end = args.trim_end().len();
     let mut text = String::new();
     let mut boundary_map = Vec::with_capacity(trimmed.chars().count() + 2);
     boundary_map.push((0, 0));
@@ -445,7 +462,12 @@ fn sanitize_args_for_prompt(args: &str) -> SanitizedArgs {
         text.push_str(&sanitized);
         boundary_map.push((offset + ch.len_utf8(), text.len()));
     }
-    SanitizedArgs { text, boundary_map }
+    SanitizedArgs {
+        text,
+        boundary_map,
+        source_start,
+        source_end,
+    }
 }
 
 fn map_sanitized_offset(boundary_map: &[(usize, usize)], offset: usize) -> usize {
@@ -564,5 +586,19 @@ mod tests {
         assert_eq!(rendered.text_elements.len(), 1);
         let range = rendered.text_elements[0].byte_range;
         assert_eq!(&rendered.text[range.start..range.end], "@build");
+    }
+
+    #[test]
+    fn workflow_prompt_trims_inline_args_and_remaps_text_elements() {
+        let rendered = render_workflow_prompt_with_elements(
+            GsdWorkflowCommand::PlanPhase,
+            "  @build  ",
+            &[TextElement::new((2..8).into(), Some("@build".to_string()))],
+        );
+
+        assert_eq!(rendered.text_elements.len(), 1);
+        let range = rendered.text_elements[0].byte_range;
+        assert_eq!(&rendered.text[range.start..range.end], "@build");
+        assert!(rendered.text.contains("Inline arguments: `@build`."));
     }
 }
